@@ -73,28 +73,82 @@ def redact_image_text(img):
         if not text:
             continue
 
-        # Normalize text (remove spaces for numbers)
-        text_norm = re.sub(r"\D", "", text)  # remove non-digits
+        # Check for sensitive patterns using original text
         patterns = [
             r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",  # email
-            r"\b\d{10}\b",                                      # phone
-            r"\b\d{12}\b",                                      # Aadhaar 12 digits
+            r"\b\d{10}\b",                                      # phone (10 digits)
+            r"\b\d{4}\s?\d{4}\s?\d{4}\b",                       # Aadhaar (12 digits with optional spaces)
             r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",                       # PAN
-            r"\b\d{2}[/-]\d{2}[/-]\d{4}\b",                     # DOB
-            r"[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}"    # Vehicle plate
+            r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",              # DOB (flexible format)
+            r"[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}",  # Vehicle plate
+            r"\b\d{4}\b",                                       # 4-digit numbers (could be part of sensitive data)
         ]
 
-        sensitive = any(re.fullmatch(pat.replace(" ", ""), text_norm) for pat in patterns)
+        # Check if text matches any sensitive pattern
+        sensitive = False
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                sensitive = True
+                break
+        
+        # Also check for numbers that could be sensitive (like partial Aadhaar, phone numbers)
+        if re.search(r'\b\d{3,}\b', text):  # Any sequence of 3+ digits
+            sensitive = True
         
         # spaCy NER for names, orgs, GPE
-        doc = nlp(text)
-        sensitive |= any(ent.label_ in ["PERSON", "GPE", "ORG"] for ent in doc.ents)
+        if not sensitive:
+            try:
+                doc = nlp(text)
+                sensitive = any(ent.label_ in ["PERSON", "GPE", "ORG"] for ent in doc.ents)
+            except:
+                # If spaCy fails, err on the side of caution for text with letters
+                if re.search(r'[A-Za-z]{2,}', text):
+                    sensitive = True
 
         if sensitive:
             x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-            region = img.crop((x, y, x+w, y+h))
-            region = region.filter(ImageFilter.GaussianBlur(20))
+            
+            # Add some padding to ensure complete coverage
+            padding = 5
+            x = max(0, x - padding)
+            y = max(0, y - padding)
+            w = min(img.width - x, w + 2 * padding)
+            h = min(img.height - y, h + 2 * padding)
+            
+            region = img.crop((x, y, x + w, y + h))
+            region = region.filter(ImageFilter.GaussianBlur(25))  # Increased blur intensity
             img.paste(region, (x, y))
+    
+    return img
+
+
+# Alternative more aggressive version if the above still misses some text
+def redact_image_text_aggressive(img):
+    """
+    More aggressive version that blurs any detected text
+    """
+    data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+    n_boxes = len(data['level'])
+    
+    for i in range(n_boxes):
+        text = data['text'][i].strip()
+        confidence = int(data['conf'][i]) if data['conf'][i] != '-1' else 0
+        
+        # If OCR detected any text with reasonable confidence, blur it
+        if text and confidence > 30:  # Confidence threshold
+            x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+            
+            # Add padding
+            padding = 10
+            x = max(0, x - padding)
+            y = max(0, y - padding)
+            w = min(img.width - x, w + 2 * padding)
+            h = min(img.height - y, h + 2 * padding)
+            
+            region = img.crop((x, y, x + w, y + h))
+            region = region.filter(ImageFilter.GaussianBlur(30))
+            img.paste(region, (x, y))
+    
     return img
 
 def blur_faces(img):
