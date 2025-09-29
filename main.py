@@ -3,7 +3,7 @@ import io
 import re
 import fitz
 import docx
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageDraw
 import pytesseract
 import spacy
 import torch
@@ -11,29 +11,27 @@ from facenet_pytorch import MTCNN
 from transformers import ViTFeatureExtractor, ViTForImageClassification
 import gradio as gr
 import google.generativeai as genai
+import pandas as pd
+from pathlib import Path
+import cv2
+import numpy as np
+from pyzbar import pyzbar
+import openpyxl
+from openpyxl.styles import PatternFill, Font
+from pptx import Presentation
+from pptx.util import Inches
+from io import BytesIO
+import zipfile
+import tempfile
+import shutil
 
-# =======================
-# Setup
-# =======================
-# --- Tesseract path ---
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-# --- SpaCy model ---
 nlp = spacy.load("en_core_web_sm")
-
-# --- ViT Model ---
 feature_extractor = ViTFeatureExtractor.from_pretrained("google/vit-base-patch16-224")
 vit_model = ViTForImageClassification.from_pretrained("google/vit-base-patch16-224")
-
-# --- Face Detector ---
 mtcnn = MTCNN(keep_all=True, device="cpu")
+genai.configure(api_key="your_api_key")
 
-# --- Gemini API ---
-genai.configure(api_key="YOUR-API-KEY")  # <-- put your Gemini API key here
-
-# =======================
-# Helper functions
-# =======================
 def extract_from_pdf(path):
     doc = fitz.open(path)
     text = ""
@@ -43,179 +41,674 @@ def extract_from_pdf(path):
 
 def extract_from_docx(path):
     docx_file = docx.Document(path)
-    return "\n".join([p.text for p in docx_file.paragraphs])
+    text_content = []
+    
+    for paragraph in docx_file.paragraphs:
+        text_content.append(paragraph.text)
+    
+    for table in docx_file.tables:
+        for row in table.rows:
+            row_text = [cell.text for cell in row.cells]
+            text_content.append("\t".join(row_text))
+    
+    return "\n".join(text_content)
+
+def extract_from_excel(path):
+    try:
+        if path.endswith('.xlsx'):
+            wb = openpyxl.load_workbook(path, data_only=True)
+            text_content = []
+            
+            for sheet_name in wb.sheetnames:
+                sheet = wb[sheet_name]
+                text_content.append(f"\n=== Sheet: {sheet_name} ===\n")
+                
+                for row in sheet.iter_rows(values_only=True):
+                    row_text = [str(cell) if cell is not None else "" for cell in row]
+                    if any(row_text):
+                        text_content.append("\t".join(row_text))
+            
+            return "\n".join(text_content)
+        else:
+            excel_file = pd.ExcelFile(path)
+            text_content = []
+            for sheet_name in excel_file.sheet_names:
+                df = pd.read_excel(path, sheet_name=sheet_name)
+                text_content.append(f"\n=== Sheet: {sheet_name} ===\n")
+                df = df.fillna('')
+                text_content.append(df.to_string(index=False))
+            return "\n".join(text_content)
+    except Exception as e:
+        return f"Error reading Excel file: {e}"
+
+def redact_excel(input_path, output_path):
+    try:
+        if input_path.endswith('.xlsx'):
+            wb = openpyxl.load_workbook(input_path)
+            black_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
+            white_font = Font(color="FFFFFF")
+            
+            sensitive_patterns = [
+                r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
+                r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+                r"\b\d{4}\s?\d{4}\s?\d{4}\b",
+                r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
+                r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b",
+                r"\b(?:AKIA|ASIA|AIDA|AROA)[A-Z0-9]{16}\b",
+                r"\bAIza[0-9A-Za-z\-_]{35}\b",
+                r"\barn:aws:",
+                r"\b\d{12}\b",
+                r"\b(?:\d{4}[-\s]?){3}\d{4}\b",
+                r"\b\d{3}-\d{2}-\d{4}\b",
+                r"[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}",
+                r"\b[A-Za-z0-9]{30,}\b",
+            ]
+            
+            for sheet_name in wb.sheetnames:
+                sheet = wb[sheet_name]
+                
+                for row in sheet.iter_rows():
+                    for cell in row.cells:
+                        if cell.value is None:
+                            continue
+                        
+                        cell_text = str(cell.value)
+                        is_sensitive = False
+                        
+                        for pattern in sensitive_patterns:
+                            if re.search(pattern, cell_text, re.IGNORECASE):
+                                is_sensitive = True
+                                break
+                        
+                        if not is_sensitive and len(cell_text) > 2 and not cell_text.isdigit():
+                            try:
+                                doc = nlp(cell_text)
+                                if any(ent.label_ in ["PERSON", "ORG", "GPE", "LOC"] for ent in doc.ents):
+                                    is_sensitive = True
+                            except:
+                                pass
+                        
+                        if is_sensitive:
+                            cell.fill = black_fill
+                            cell.font = white_font
+                            cell.value = "[REDACTED]"
+            
+            wb.save(output_path)
+            return output_path
+        else:
+            excel_file = pd.ExcelFile(input_path)
+            with pd.ExcelWriter(output_path.replace('.xls', '.xlsx'), engine='openpyxl') as writer:
+                for sheet_name in excel_file.sheet_names:
+                    df = pd.read_excel(input_path, sheet_name=sheet_name)
+                    
+                    for col in df.columns:
+                        df[col] = df[col].apply(lambda x: "[REDACTED]" if pd.notna(x) and is_sensitive_text(str(x)) else x)
+                    
+                    df.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+            return output_path.replace('.xls', '.xlsx')
+            
+    except Exception as e:
+        print(f"Error redacting Excel: {e}")
+        return None
+
+def extract_from_ppt(path):
+    try:
+        prs = Presentation(path)
+        text_content = []
+        
+        for slide_num, slide in enumerate(prs.slides, 1):
+            text_content.append(f"\n=== Slide {slide_num} ===\n")
+            
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text:
+                    text_content.append(shape.text)
+                
+                if shape.has_table:
+                    table = shape.table
+                    for row in table.rows:
+                        row_text = [cell.text for cell in row.cells]
+                        text_content.append("\t".join(row_text))
+                
+                if hasattr(shape, "text_frame") and shape.text_frame:
+                    for paragraph in shape.text_frame.paragraphs:
+                        for run in paragraph.runs:
+                            if run.text:
+                                text_content.append(run.text)
+        
+        return "\n".join(text_content)
+    except Exception as e:
+        return f"Error reading PowerPoint file: {e}"
+
+def redact_ppt(input_path, output_path):
+    try:
+        prs = Presentation(input_path)
+        
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text:
+                    original_text = shape.text
+                    redacted_text = redact_text(original_text)
+                    
+                    if shape.has_text_frame:
+                        shape.text_frame.clear()
+                        p = shape.text_frame.paragraphs[0]
+                        run = p.runs[0] if p.runs else p.add_run()
+                        run.text = redacted_text
+                
+                if shape.has_table:
+                    table = shape.table
+                    for row in table.rows:
+                        for cell in row.cells:
+                            if cell.text:
+                                original_text = cell.text
+                                redacted_text = redact_text(original_text)
+                                cell.text_frame.clear()
+                                p = cell.text_frame.paragraphs[0]
+                                run = p.runs[0] if p.runs else p.add_run()
+                                run.text = redacted_text
+        
+        prs.save(output_path)
+        return output_path
+    except Exception as e:
+        print(f"Error redacting PowerPoint: {e}")
+        return None
 
 def extract_from_image(path):
     img = Image.open(path).convert("RGB")
     text = pytesseract.image_to_string(img)
     return text, img
 
+def is_sensitive_text(text):
+    sensitive_patterns = [
+        r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
+        r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+        r"\b\d{4}\s?\d{4}\s?\d{4}\b",
+        r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
+        r"\b(?:AKIA|ASIA|AIDA|AROA)[A-Z0-9]{16}\b",
+        r"\bAIza[0-9A-Za-z\-_]{35}\b",
+        r"\b[A-Za-z0-9]{30,}\b",
+    ]
+    
+    for pattern in sensitive_patterns:
+        if re.search(pattern, str(text), re.IGNORECASE):
+            return True
+    
+    try:
+        if len(str(text)) > 2:
+            doc = nlp(str(text))
+            if any(ent.label_ in ["PERSON", "ORG", "GPE", "LOC"] for ent in doc.ents):
+                return True
+    except:
+        pass
+    
+    return False
+
 def redact_text(text):
     patterns = {
         "EMAIL": r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
-        "PHONE": r"\b\d{10}\b",
+        "PHONE": r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b",
         "AADHAAR": r"\b\d{4}\s?\d{4}\s?\d{4}\b",
         "PAN": r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
-        "DOB": r"\b\d{2}[/-]\d{2}[/-]\d{4}\b",
-        "VEHICLE": r"[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}"
+        "VEHICLE": r"\b[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}\b",
+        "DOB": r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+        "DATE": r"\b\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?\b",
+        "IPV4": r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:/\d{1,2})?\b",
+        "IPV6": r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b",
+        "MAC_ADDRESS": r"\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b",
+        "PORT": r"\b:\d{2,5}\b(?=\s|,|$)",
+        "AWS_ACCESS_KEY": r"\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|APKA)[A-Z0-9]{16}\b",
+        "AWS_SECRET_KEY": r"\b[A-Za-z0-9/+=]{40}\b(?=\s|,|\"|}|$)",
+        "AWS_ARN": r"\barn:aws:[a-z0-9\-]+:[a-z0-9\-]*:\d{12}:[a-zA-Z0-9\-/]+",
+        "AWS_ACCOUNT_ID": r"\b\d{12}(?=:|\"|\s|,|})",
+        "API_KEY": r"\b[A-Za-z0-9_\-]{32,45}\b",
+        "JWT_TOKEN": r"\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+",
+        "BEARER_TOKEN": r"\bBearer\s+[A-Za-z0-9\-._~+/]+=*",
+        "GOOGLE_API_KEY": r"\bAIza[0-9A-Za-z\-_]{35}\b",
+        "GITHUB_TOKEN": r"\bghp_[A-Za-z0-9]{36}\b",
+        "GITHUB_OAUTH": r"\bgho_[A-Za-z0-9]{36}\b",
+        "PASSWORD_FIELD": r"(?i)(?:password|passwd|pwd|secret)[\"\s]*[:=][\"\s]*[^\s\"}{,]{6,}",
+        "CREDIT_CARD": r"\b(?:\d{4}[-\s]?){3}\d{4}\b",
+        "SSN": r"\b\d{3}-\d{2}-\d{4}\b",
+        "DB_CONNECTION": r"(?i)(?:mongodb|mysql|postgresql|jdbc):\/\/[^\s\"'<>]+",
+        "PRIVATE_KEY": r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[^-]+-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+        "LONG_ALPHANUMERIC": r"\b[A-Za-z0-9]{50,}\b",
     }
+    
+    priority_patterns = [
+        "PRIVATE_KEY", "JWT_TOKEN", "BEARER_TOKEN", "AWS_ARN", 
+        "AWS_ACCESS_KEY", "AWS_SECRET_KEY", "GOOGLE_API_KEY",
+        "GITHUB_TOKEN", "GITHUB_OAUTH", "DB_CONNECTION",
+        "EMAIL", "IPV4", "IPV6", "MAC_ADDRESS", 
+        "AWS_ACCOUNT_ID", "AADHAAR", "PAN", "CREDIT_CARD", "SSN",
+        "PHONE", "VEHICLE", "DATE", "DOB"
+    ]
+    
+    for label in priority_patterns:
+        if label in patterns:
+            text = re.sub(patterns[label], f"[REDACTED_{label}]", text, flags=re.IGNORECASE if label == "PASSWORD_FIELD" else 0)
+    
     for label, pat in patterns.items():
-        text = re.sub(pat, f"[REDACTED_{label}]", text)
-
-    doc = nlp(text)
-    redacted_positions = []
-    for ent in doc.ents:
-        if ent.label_ in ["PERSON", "GPE", "ORG"]:
-            overlap = any(not (ent.start_char >= end or ent.end_char <= start) for start, end in redacted_positions)
-            if not overlap:
-                text = text[:ent.start_char] + f"[REDACTED_{ent.label_}]" + text[ent.end_char:]
-                new_end = ent.start_char + len(f"[REDACTED_{ent.label_}]")
-                redacted_positions.append((ent.start_char, new_end))
+        if label not in priority_patterns:
+            text = re.sub(pat, f"[REDACTED_{label}]", text)
+    
+    try:
+        doc = nlp(text)
+        redacted_positions = []
+        for ent in doc.ents:
+            if ent.label_ in ["PERSON", "GPE", "ORG", "LOC", "FAC"]:
+                overlap = any(not (ent.start_char >= end or ent.end_char <= start) for start, end in redacted_positions)
+                if not overlap and len(ent.text) > 2:
+                    text = text[:ent.start_char] + f"[REDACTED_{ent.label_}]" + text[ent.end_char:]
+                    new_end = ent.start_char + len(f"[REDACTED_{ent.label_}]")
+                    redacted_positions.append((ent.start_char, new_end))
+    except Exception as e:
+        print(f"SpaCy NER error: {e}")
+    
     return text
 
 def redact_image_text(img):
     data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
     n_boxes = len(data['level'])
     
+    patterns = [
+        r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
+        r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+        r"\b\d{4}\s?\d{4}\s?\d{4}\b",
+        r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
+        r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+        r"[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}",
+        r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:/\d{1,2})?\b",
+        r"\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b",
+        r"\b(?:AKIA|ASIA|AIDA|AROA)[A-Z0-9]{16}\b",
+        r"\bAIza[0-9A-Za-z\-_]{35}\b",
+        r"\bghp_[A-Za-z0-9]{36}\b",
+        r"\beyJ[A-Za-z0-9_\-]+\.",
+        r"\b\d{12}\b",
+        r"\barn:aws:",
+        r"\b(?:\d{4}[-\s]?){3}\d{4}\b",
+        r"\b\d{3}-\d{2}-\d{4}\b",
+        r"\b[A-Za-z0-9]{30,}\b",
+    ]
+    
     for i in range(n_boxes):
         text = data['text'][i].strip()
         if not text:
             continue
 
-        # Sensitive patterns
-        patterns = [
-            r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",  # email
-            r"\b\d{10}\b",                                      # phone
-            r"\b\d{4}\s?\d{4}\s?\d{4}\b",                       # Aadhaar
-            r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",                       # PAN
-            r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",              # DOB
-            r"[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}",  # Vehicle plate
-            r"\b\d{4}\b",
-        ]
-
         sensitive = False
+        
         for pattern in patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 sensitive = True
                 break
-
-        if re.search(r'\b\d{3,}\b', text):
+        
+        if re.search(r'\b\d{8,}\b', text):
             sensitive = True
-
-        if not sensitive:
+        
+        if re.search(r'[A-Z]{3,}[0-9]{3,}', text):
+            sensitive = True
+        
+        if not sensitive and len(text) > 2:
             try:
                 doc = nlp(text)
-                sensitive = any(ent.label_ in ["PERSON", "GPE", "ORG"] for ent in doc.ents)
+                sensitive = any(ent.label_ in ["PERSON", "GPE", "ORG", "LOC", "FAC"] for ent in doc.ents)
             except:
-                if re.search(r'[A-Za-z]{2,}', text):
+                if re.search(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text):
                     sensitive = True
-
+        
         if sensitive:
             x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
-            padding = 5
+            padding = 8
             x = max(0, x - padding)
             y = max(0, y - padding)
             w = min(img.width - x, w + 2 * padding)
             h = min(img.height - y, h + 2 * padding)
-            region = img.crop((x, y, x + w, y + h))
-            region = region.filter(ImageFilter.GaussianBlur(25))
-            img.paste(region, (x, y))
+            
+            if w > 0 and h > 0:
+                region = img.crop((x, y, x + w, y + h))
+                region = region.filter(ImageFilter.GaussianBlur(30))
+                img.paste(region, (x, y))
+    
+    return img
+
+def detect_and_blur_codes(img):
+    try:
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        decoded_objects = pyzbar.decode(img_cv)
+        
+        for obj in decoded_objects:
+            points = obj.polygon
+            if len(points) == 4:
+                x = min([p.x for p in points])
+                y = min([p.y for p in points])
+                w = max([p.x for p in points]) - x
+                h = max([p.y for p in points]) - y
+                
+                padding = 10
+                x = max(0, x - padding)
+                y = max(0, y - padding)
+                w = min(img.width - x, w + 2 * padding)
+                h = min(img.height - y, h + 2 * padding)
+                
+                region = img.crop((x, y, x + w, y + h))
+                region = region.filter(ImageFilter.GaussianBlur(35))
+                img.paste(region, (x, y))
+    except Exception as e:
+        print(f"QR/Barcode detection error: {e}")
     
     return img
 
 def blur_faces(img):
-    boxes, _ = mtcnn.detect(img)
-    if boxes is not None:
-        for box in boxes:
-            x1, y1, x2, y2 = map(int, box)
-            face = img.crop((x1, y1, x2, y2))
-            face = face.filter(ImageFilter.GaussianBlur(30))
-            img.paste(face, (x1, y1))
+    try:
+        boxes, _ = mtcnn.detect(img)
+        if boxes is not None:
+            for box in boxes:
+                x1, y1, x2, y2 = map(int, box)
+                face = img.crop((x1, y1, x2, y2))
+                face = face.filter(ImageFilter.GaussianBlur(30))
+                img.paste(face, (x1, y1))
+    except Exception as e:
+        print(f"Face detection error: {e}")
     return img
 
-def classify_image(img):
-    inputs = feature_extractor(images=img, return_tensors="pt")
-    outputs = vit_model(**inputs)
-    probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-    pred = probs.argmax().item()
-    return vit_model.config.id2label[pred]
-
-# =======================
-# Gemini Summarization / Image description
-# =======================
-def summarize_with_gemini(text):
+def analyze_with_gemini(text, file_type, file_name):
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(f"Summarize the following text:\n\n{text}")
+        model = genai.GenerativeModel("gemini-2.0-flash-exp")
+        
+        prompt = f"""Analyze the following content from a {file_type} file named "{file_name}".
+
+Content:
+{text}
+
+Please provide a structured analysis in the following format:
+1. File Description: A brief description of what this file contains (2-3 sentences)
+2. Key Findings: List 3-4 bullet points of the most important findings or insights
+
+Be concise and focus on the main purpose and key information."""
+
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Summarization failed: {e}"
+        return f"Analysis failed: {e}"
 
-# NEW: ask Gemini to describe an image if no text
 def describe_image_with_gemini(img_path):
-    model = genai.GenerativeModel("gemini-2.5-flash")
-    with open(img_path, "rb") as f:
-        img_bytes = f.read()
+    try:
+        model = genai.GenerativeModel("gemini-2.0-flash-exp")
+        with open(img_path, "rb") as f:
+            img_bytes = f.read()
 
-    response = model.generate_content(
-        [
-            "Describe the following image in one sentence.",
+        prompt = """Analyze this image and provide:
+1. File Description: What is shown in the image? (2-3 sentences)
+2. Key Findings: List 3-4 key observations or insights about what's in the image
+
+Format your response clearly with these two sections."""
+
+        response = model.generate_content([
+            prompt,
             {"mime_type": "image/png", "data": img_bytes}
-        ]
-    )
-    return response.text
+        ])
+        return response.text
+    except Exception as e:
+        return f"Image analysis failed: {e}"
 
-# =======================
-# Gradio processing
-# =======================
-def process_file(file):
-    fname = file.name
+def process_single_file(file_path):
+    fname = str(file_path)
+    file_name = os.path.basename(fname)
     ext = fname.split(".")[-1].lower()
+    
+    result = {
+        "File Name": file_name,
+        "File Type": f".{ext}",
+        "File Description": "",
+        "Key Findings": "",
+        "Processed Image": None,
+        "Redacted File": None
+    }
 
-    if ext == "pdf":
-        raw_text = extract_from_pdf(fname)
-        redacted_text = redact_text(raw_text)
-        summary = summarize_with_gemini(redacted_text)
-        return redacted_text, summary, None
-
-    elif ext == "docx":
-        raw_text = extract_from_docx(fname)
-        redacted_text = redact_text(raw_text)
-        summary = summarize_with_gemini(redacted_text)
-        return redacted_text, summary, None
-
-    elif ext in ["jpg", "jpeg", "png"]:
-        ocr_text, img = extract_from_image(fname)
-        img = redact_image_text(img)
-        img = blur_faces(img)
-        redacted_text = redact_text(ocr_text)
-
-        if len(ocr_text.strip()) < 5:  # NEW: fallback to Gemini vision
-            # Try Gemini image description
-            description = describe_image_with_gemini(fname)
-            redacted_text = f"{description}\nSensitive content blurred."
-            summary = ""  # No extra summary needed
+    try:
+        if ext == "pdf":
+            raw_text = extract_from_pdf(fname)
+            redacted_text = redact_text(raw_text)
+            analysis = analyze_with_gemini(redacted_text[:5000], "PDF", file_name)
+            
+        elif ext == "docx":
+            raw_text = extract_from_docx(fname)
+            redacted_text = redact_text(raw_text)
+            analysis = analyze_with_gemini(redacted_text[:5000], "DOCX", file_name)
+            
+        elif ext in ["xlsx", "xls"]:
+            raw_text = extract_from_excel(fname)
+            redacted_text = redact_text(raw_text)
+            analysis = analyze_with_gemini(redacted_text[:5000], "Excel", file_name)
+            
+            output_dir = os.path.join(os.path.dirname(fname), "redacted_output")
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"redacted_{file_name}")
+            redacted_file = redact_excel(fname, output_path)
+            result["Redacted File"] = redacted_file
+            
+        elif ext in ["pptx", "ppt"]:
+            raw_text = extract_from_ppt(fname)
+            redacted_text = redact_text(raw_text)
+            analysis = analyze_with_gemini(redacted_text[:5000], "PowerPoint", file_name)
+            
+            output_dir = os.path.join(os.path.dirname(fname), "redacted_output")
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"redacted_{file_name}")
+            redacted_file = redact_ppt(fname, output_path)
+            result["Redacted File"] = redacted_file
+            
+        elif ext in ["jpg", "jpeg", "png"]:
+            ocr_text, img = extract_from_image(fname)
+            img = detect_and_blur_codes(img)
+            img = redact_image_text(img)
+            img = blur_faces(img)
+            result["Processed Image"] = img
+            
+            output_dir = os.path.join(os.path.dirname(fname), "redacted_output")
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"redacted_{file_name}")
+            img.save(output_path)
+            result["Redacted File"] = output_path
+            
+            if len(ocr_text.strip()) < 10:
+                analysis = describe_image_with_gemini(fname)
+            else:
+                redacted_text = redact_text(ocr_text)
+                analysis = analyze_with_gemini(redacted_text[:3000], "Image", file_name)
         else:
-            summary = summarize_with_gemini(redacted_text)
+            result["File Description"] = "Unsupported file type"
+            return result
+        
+        lines = analysis.split('\n')
+        description_lines = []
+        findings_lines = []
+        in_description = False
+        in_findings = False
+        
+        for line in lines:
+            line = line.strip()
+            if 'file description' in line.lower() or line.startswith('1.'):
+                in_description = True
+                in_findings = False
+                if ':' in line:
+                    desc_text = line.split(':', 1)[1].strip()
+                    if desc_text:
+                        description_lines.append(desc_text)
+                continue
+            elif 'key findings' in line.lower() or line.startswith('2.'):
+                in_description = False
+                in_findings = True
+                continue
+            
+            if in_description and line:
+                description_lines.append(line)
+            elif in_findings and line:
+                findings_lines.append(line)
+        
+        result["File Description"] = ' '.join(description_lines) if description_lines else "Analysis completed"
+        result["Key Findings"] = '\n'.join(findings_lines) if findings_lines else "See description"
+        
+    except Exception as e:
+        result["File Description"] = f"Error processing file"
+        result["Key Findings"] = str(e)
+    
+    return result
 
-        return redacted_text, summary, img
+def process_directory(directory_path):
+    if not directory_path or not os.path.exists(directory_path):
+        return "Invalid directory path", None, None
+    
+    supported_extensions = ['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.ppt', '.jpg', '.jpeg', '.png']
+    files = []
+    
+    path_obj = Path(directory_path)
+    for ext in supported_extensions:
+        files.extend(path_obj.glob(f'*{ext}'))
+        files.extend(path_obj.glob(f'*{ext.upper()}'))
+    
+    if not files:
+        return "No supported files found in directory", None, None
+    
+    results = []
+    processed_images = []
+    redacted_files_list = []
+    
+    for file_path in sorted(files):
+        print(f"Processing: {file_path.name}")
+        result = process_single_file(file_path)
+        results.append(result)
+        if result["Processed Image"] is not None:
+            processed_images.append((result["File Name"], result["Processed Image"]))
+        if result["Redacted File"] is not None:
+            redacted_files_list.append(result["Redacted File"])
+    
+    df = pd.DataFrame(results)
+    df = df[["File Name", "File Type", "File Description", "Key Findings"]]
+    
+    html_output = """
+    <style>
+         
 
-    else:
-        return "Unsupported file type.", "", None
+        .analysis-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin-top: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .analysis-table th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-weight: 600;
+            padding: 12px 15px;
+            text-align: left;
+            border: 1px solid #ddd;
+        }
+        .analysis-table td {
+            padding: 12px 15px;
+            border: 1px solid #ddd;
+            vertical-align: top;
+            line-height: 1.4;
+        }
+        .analysis-table tr:nth-child(even) {
+            background-color: #000000;
+        }
+        .analysis-table tr:nth-child(odd) {
+            background-color: #000000;
+        }
+        
+        .file-type {
+            font-weight: bold;
+            color: #5b9bd5;
+        }
+        .key-findings {
+            white-space: pre-line;
+        }
+        .key-findings::before {
+            content: "• ";
+        }
+    </style>
+    
+    <table class="analysis-table">
+        <thead>
+            <tr>
+                <th>File Name</th>
+                <th>File Type</th>
+                <th>File Description</th>
+                <th>Key Findings</th>
+            </tr>
+        </thead>
+        <tbody>
+    """
+    
+    for _, row in df.iterrows():
+        findings_formatted = row['Key Findings'].replace('\n', '\n• ')
+        if findings_formatted and not findings_formatted.startswith('•'):
+            findings_formatted = '• ' + findings_formatted
+        
+        html_output += f"""
+            <tr>
+                <td>{row['File Name']}</td>
+                <td class="file-type">{row['File Type']}</td>
+                <td>{row['File Description']}</td>
+                <td class="key-findings">{findings_formatted}</td>
+            </tr>
+        """
+    
+    html_output += """
+        </tbody>
+    </table>
+    
+    <div style="background-color: #ffeb3b; padding: 15px; margin-top: 20px; text-align: center; font-weight: bold; border-radius: 5px; border: 2px solid #ffc107;">
+        Follow Similar Pattern for Other Files
+    </div>
+    """
+    
+    image_gallery = None
+    if processed_images:
+        image_gallery = [img for _, img in processed_images]
+    
+    download_info = f"Redacted files saved in: {os.path.join(directory_path, 'redacted_output')}" if redacted_files_list else "No files required redaction"
+    
+    return html_output, image_gallery, download_info
 
-# =======================
-# Gradio interface
-# =======================
-iface = gr.Interface(
-    fn=process_file,
-    inputs=gr.File(file_types=[".pdf", ".docx", ".jpg", ".jpeg", ".png"]),
-    outputs=[
-        gr.Textbox(label="Redacted Text"),
-        gr.Textbox(label="Summary"),
-        gr.Image(label="Processed Image", type="pil")
-    ],
-    title="Document & Image Redactor + Summarizer",
-    description="Upload a PDF, DOCX, or image. Redacts sensitive text, blurs faces in images, and summarizes or describes the remaining content using Gemini."
-)
+with gr.Blocks(title="Enhanced Batch File Analyzer", theme=gr.themes.Soft()) as iface:
+    
+    with gr.Row():
+        directory_input = gr.Textbox(
+            label="Directory Path",
+            placeholder="C:/Users/YourName/Documents/FilesToAnalyze",
+            lines=1,
+            info="Enter the full path to the directory containing your files"
+        )
+    
+    analyze_btn = gr.Button("Analyze All Files", variant="primary", size="lg")
+    
+    with gr.Row():
+        output_html = gr.HTML(label="Analysis Results")
+    
+    with gr.Row():
+        output_gallery = gr.Gallery(
+            label="Processed Images (Redacted & Face-Blurred)",
+            columns=3,
+            height="auto",
+            show_label=True
+        )
+    
+    with gr.Row():
+        download_info = gr.Textbox(
+            label="Download Information",
+            lines=2,
+            interactive=False
+        )
+    
+    analyze_btn.click(
+        fn=process_directory,
+        inputs=[directory_input],
+        outputs=[output_html, output_gallery, download_info]
+    )
 
-iface.launch()
+if __name__ == "__main__":
+    iface.launch(share=False, server_name="0.0.0.0", server_port=7860)
