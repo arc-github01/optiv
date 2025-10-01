@@ -1,36 +1,50 @@
 import os
 import io
 import re
+import zipfile
+import tempfile
+import shutil
 import fitz
 import docx
-from PIL import Image, ImageFilter, ImageDraw
-import pytesseract
-import spacy
-import torch
-from facenet_pytorch import MTCNN
-from transformers import ViTFeatureExtractor, ViTForImageClassification
-import gradio as gr
-import google.generativeai as genai
-import pandas as pd
 from pathlib import Path
+import pandas as pd
 import cv2
 import numpy as np
-from pyzbar import pyzbar
+from PIL import Image, ImageFilter, ImageDraw
+import pytesseract
+from facenet_pytorch import MTCNN
+from transformers import ViTFeatureExtractor, ViTForImageClassification
+
+import spacy
+
 import openpyxl
 from openpyxl.styles import PatternFill, Font
 from pptx import Presentation
 from pptx.util import Inches
-from io import BytesIO
-import zipfile
-import tempfile
-import shutil
+
+import gradio as gr
+import google.generativeai as genai
+
+import torch
+
+from ctypes import CDLL
+from pyzbar import pyzbar
+
+
+dll_path = os.path.join(os.path.dirname(__file__), "libzbar-64.dll")
+CDLL(dll_path)
+
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+
 nlp = spacy.load("en_core_web_sm")
+
 feature_extractor = ViTFeatureExtractor.from_pretrained("google/vit-base-patch16-224")
 vit_model = ViTForImageClassification.from_pretrained("google/vit-base-patch16-224")
 mtcnn = MTCNN(keep_all=True, device="cpu")
 genai.configure(api_key="your_api_key")
+
 
 def extract_from_pdf(path):
     try:
