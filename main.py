@@ -33,11 +33,18 @@ mtcnn = MTCNN(keep_all=True, device="cpu")
 genai.configure(api_key="your_api_key")
 
 def extract_from_pdf(path):
-    doc = fitz.open(path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
+    try:
+        doc = fitz.open(path)
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+        return text
+    except Exception as e:
+        print(f"Error reading PDF: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
 
 def extract_from_docx(path):
     docx_file = docx.Document(path)
@@ -79,6 +86,9 @@ def extract_from_excel(path):
                 text_content.append(df.to_string(index=False))
             return "\n".join(text_content)
     except Exception as e:
+        print(f"Error reading Excel file: {e}")
+        import traceback
+        traceback.print_exc()
         return f"Error reading Excel file: {e}"
 
 def redact_excel(input_path, output_path):
@@ -107,8 +117,9 @@ def redact_excel(input_path, output_path):
             for sheet_name in wb.sheetnames:
                 sheet = wb[sheet_name]
                 
+                # FIXED: Iterate correctly over rows
                 for row in sheet.iter_rows():
-                    for cell in row.cells:
+                    for cell in row:  # Changed from row.cells to row
                         if cell.value is None:
                             continue
                         
@@ -137,7 +148,8 @@ def redact_excel(input_path, output_path):
             return output_path
         else:
             excel_file = pd.ExcelFile(input_path)
-            with pd.ExcelWriter(output_path.replace('.xls', '.xlsx'), engine='openpyxl') as writer:
+            output_path = output_path.replace('.xls', '.xlsx')
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 for sheet_name in excel_file.sheet_names:
                     df = pd.read_excel(input_path, sheet_name=sheet_name)
                     
@@ -146,10 +158,70 @@ def redact_excel(input_path, output_path):
                     
                     df.to_excel(writer, sheet_name=sheet_name, index=False)
             
-            return output_path.replace('.xls', '.xlsx')
+            return output_path
             
     except Exception as e:
         print(f"Error redacting Excel: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def redact_pdf(input_path, output_path):
+    """Create redacted PDF by overlaying black rectangles on sensitive text"""
+    try:
+        doc = fitz.open(input_path)
+        
+        for page in doc:
+            text_instances = page.get_text("dict")
+            blocks = text_instances.get("blocks", [])
+            
+            for block in blocks:
+                if "lines" in block:
+                    for line in block["lines"]:
+                        for span in line["spans"]:
+                            text = span.get("text", "")
+                            if is_sensitive_text(text):
+                                bbox = span["bbox"]
+                                # Draw black rectangle over sensitive text
+                                rect = fitz.Rect(bbox)
+                                page.draw_rect(rect, color=(0, 0, 0), fill=(0, 0, 0))
+        
+        doc.save(output_path)
+        doc.close()
+        return output_path
+    except Exception as e:
+        print(f"Error redacting PDF: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def redact_docx(input_path, output_path):
+    """Create redacted DOCX by replacing sensitive text"""
+    try:
+        doc = docx.Document(input_path)
+        
+        # Redact paragraphs
+        for paragraph in doc.paragraphs:
+            if paragraph.text:
+                redacted_text = redact_text(paragraph.text)
+                if redacted_text != paragraph.text:
+                    paragraph.text = redacted_text
+        
+        # Redact tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text:
+                        redacted_text = redact_text(cell.text)
+                        if redacted_text != cell.text:
+                            cell.text = redacted_text
+        
+        doc.save(output_path)
+        return output_path
+    except Exception as e:
+        print(f"Error redacting DOCX: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def extract_from_ppt(path):
@@ -178,6 +250,9 @@ def extract_from_ppt(path):
         
         return "\n".join(text_content)
     except Exception as e:
+        print(f"Error reading PowerPoint file: {e}")
+        import traceback
+        traceback.print_exc()
         return f"Error reading PowerPoint file: {e}"
 
 def redact_ppt(input_path, output_path):
@@ -212,6 +287,8 @@ def redact_ppt(input_path, output_path):
         return output_path
     except Exception as e:
         print(f"Error redacting PowerPoint: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 def extract_from_image(path):
@@ -430,6 +507,7 @@ Be concise and focus on the main purpose and key information."""
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
+        print(f"Gemini analysis error: {e}")
         return f"Analysis failed: {e}"
 
 def describe_image_with_gemini(img_path):
@@ -450,6 +528,7 @@ Format your response clearly with these two sections."""
         ])
         return response.text
     except Exception as e:
+        print(f"Image analysis error: {e}")
         return f"Image analysis failed: {e}"
 
 def process_single_file(file_path):
@@ -467,24 +546,39 @@ def process_single_file(file_path):
     }
 
     try:
+        # Create output directory
+        output_dir = os.path.join(os.path.dirname(fname), "redacted_output")
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, f"redacted_{file_name}")
+        
         if ext == "pdf":
             raw_text = extract_from_pdf(fname)
+            if not raw_text or len(raw_text.strip()) < 10:
+                result["File Description"] = "PDF appears empty or could not be read"
+                result["Key Findings"] = "Check if PDF is valid and not password protected"
+                return result
+                
             redacted_text = redact_text(raw_text)
             analysis = analyze_with_gemini(redacted_text[:5000], "PDF", file_name)
+            
+            # Create redacted PDF
+            redacted_file = redact_pdf(fname, output_path)
+            result["Redacted File"] = redacted_file
             
         elif ext == "docx":
             raw_text = extract_from_docx(fname)
             redacted_text = redact_text(raw_text)
             analysis = analyze_with_gemini(redacted_text[:5000], "DOCX", file_name)
             
+            # Create redacted DOCX
+            redacted_file = redact_docx(fname, output_path)
+            result["Redacted File"] = redacted_file
+            
         elif ext in ["xlsx", "xls"]:
             raw_text = extract_from_excel(fname)
             redacted_text = redact_text(raw_text)
             analysis = analyze_with_gemini(redacted_text[:5000], "Excel", file_name)
             
-            output_dir = os.path.join(os.path.dirname(fname), "redacted_output")
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, f"redacted_{file_name}")
             redacted_file = redact_excel(fname, output_path)
             result["Redacted File"] = redacted_file
             
@@ -493,9 +587,6 @@ def process_single_file(file_path):
             redacted_text = redact_text(raw_text)
             analysis = analyze_with_gemini(redacted_text[:5000], "PowerPoint", file_name)
             
-            output_dir = os.path.join(os.path.dirname(fname), "redacted_output")
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, f"redacted_{file_name}")
             redacted_file = redact_ppt(fname, output_path)
             result["Redacted File"] = redacted_file
             
@@ -506,9 +597,6 @@ def process_single_file(file_path):
             img = blur_faces(img)
             result["Processed Image"] = img
             
-            output_dir = os.path.join(os.path.dirname(fname), "redacted_output")
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, f"redacted_{file_name}")
             img.save(output_path)
             result["Redacted File"] = output_path
             
@@ -521,6 +609,7 @@ def process_single_file(file_path):
             result["File Description"] = "Unsupported file type"
             return result
         
+        # Parse analysis results
         lines = analysis.split('\n')
         description_lines = []
         findings_lines = []
@@ -553,6 +642,8 @@ def process_single_file(file_path):
     except Exception as e:
         result["File Description"] = f"Error processing file"
         result["Key Findings"] = str(e)
+        import traceback
+        traceback.print_exc()
     
     return result
 
@@ -576,7 +667,7 @@ def process_directory(directory_path):
     redacted_files_list = []
     
     for file_path in sorted(files):
-        print(f"Processing: {file_path.name}")
+        print(f"Processing: {file_path}")
         result = process_single_file(file_path)
         results.append(result)
         if result["Processed Image"] is not None:
@@ -589,8 +680,6 @@ def process_directory(directory_path):
     
     html_output = """
     <style>
-         
-
         .analysis-table {
             width: 100%;
             border-collapse: collapse;
