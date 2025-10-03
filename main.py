@@ -43,7 +43,7 @@ nlp = spacy.load("en_core_web_sm")
 feature_extractor = ViTFeatureExtractor.from_pretrained("google/vit-base-patch16-224")
 vit_model = ViTForImageClassification.from_pretrained("google/vit-base-patch16-224")
 mtcnn = MTCNN(keep_all=True, device="cpu")
-genai.configure(api_key="AIzaSyD1-XwjgmYjLOvixPAvWbCsWk6pZlkDYxI")
+genai.configure(api_key="your_api_key")
 
 
 def extract_from_pdf(path):
@@ -569,7 +569,7 @@ Be concise and focus on the main purpose and key information."""
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        print(f"Gemini analysis error: {e}")
+        
         return f"Analysis failed: {e}"
 
 def describe_image_with_gemini(img_path):
@@ -590,7 +590,7 @@ Format your response clearly with these two sections."""
         ])
         return response.text
     except Exception as e:
-        print(f"Image analysis error: {e}")
+       
         return f"Image analysis failed: {e}"
 
 def process_single_file(file_path):
@@ -812,9 +812,7 @@ def process_directory(directory_path):
         </tbody>
     </table>
     
-    <div style="background-color: #ffeb3b; padding: 15px; margin-top: 20px; text-align: center; font-weight: bold; border-radius: 5px; border: 2px solid #ffc107;">
-        Follow Similar Pattern for Other Files
-    </div>
+    
     """
     
     image_gallery = None
@@ -840,25 +838,12 @@ with gr.Blocks(title="Enhanced Batch File Analyzer", theme=gr.themes.Soft()) as 
     with gr.Row():
         output_html = gr.HTML(label="Analysis Results")
     
-    with gr.Row():
-        output_gallery = gr.Gallery(
-            label="Processed Images (Redacted & Face-Blurred)",
-            columns=3,
-            height="auto",
-            show_label=True
-        )
     
-    with gr.Row():
-        download_info = gr.Textbox(
-            label="Download Information",
-            lines=2,
-            interactive=False
-        )
     
     analyze_btn.click(
         fn=process_directory,
         inputs=[directory_input],
-        outputs=[output_html, output_gallery, download_info]
+        outputs=[output_html]
     )
 
 if __name__ == "__main__":
