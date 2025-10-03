@@ -43,7 +43,7 @@ nlp = spacy.load("en_core_web_sm")
 feature_extractor = ViTFeatureExtractor.from_pretrained("google/vit-base-patch16-224")
 vit_model = ViTForImageClassification.from_pretrained("google/vit-base-patch16-224")
 mtcnn = MTCNN(keep_all=True, device="cpu")
-genai.configure(api_key="AIzaSyD1-XwjgmYjLOvixPAvWbCsWk6pZlkDYxI")
+genai.configure(api_key="your_api_key")
 
 
 def extract_from_pdf(path):
@@ -113,8 +113,8 @@ def redact_excel(input_path, output_path):
             white_font = Font(color="FFFFFF")
             
             sensitive_patterns = [
-                r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+\b",
-                r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+                r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
+                r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
                 r"\b\d{4}\s?\d{4}\s?\d{4}\b",
                 r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
                 r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b",
@@ -185,40 +185,20 @@ def redact_pdf(input_path, output_path):
     try:
         doc = fitz.open(input_path)
         
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            
-            # Redact text
+        for page in doc:
             text_instances = page.get_text("dict")
             blocks = text_instances.get("blocks", [])
+            
             for block in blocks:
                 if "lines" in block:
                     for line in block["lines"]:
                         for span in line["spans"]:
                             text = span.get("text", "")
                             if is_sensitive_text(text):
-                                rect = fitz.Rect(span["bbox"])
+                                bbox = span["bbox"]
+                                # Draw black rectangle over sensitive text
+                                rect = fitz.Rect(bbox)
                                 page.draw_rect(rect, color=(0, 0, 0), fill=(0, 0, 0))
-            
-            # Redact images (blur faces)
-            image_list = page.get_images(full=True)
-            for img_info in image_list:
-                xref = img_info[0]
-                base_image = doc.extract_image(xref)
-                image_bytes = base_image["image"]
-                
-                pil_image = Image.open(io.BytesIO(image_bytes))
-                processed_image = pil_image.convert("RGB")
-                processed_image = blur_faces(processed_image)
-                processed_image = detect_and_blur_codes(processed_image)
-                
-                # Convert blurred image to a format PyMuPDF understands (like PNG)
-                img_byte_arr = io.BytesIO()
-                processed_image.save(img_byte_arr, format='PNG')
-                
-                # Replace image
-                img_rect = page.get_image_bbox(img_info)
-                page.insert_image(img_rect, stream=img_byte_arr.getvalue(), keep_proportion=False)
         
         doc.save(output_path)
         doc.close()
@@ -294,21 +274,17 @@ def redact_ppt(input_path, output_path):
         prs = Presentation(input_path)
         
         for slide in prs.slides:
-            shapes_to_replace = []
-
             for shape in slide.shapes:
-                # Redact text in shapes
                 if hasattr(shape, "text") and shape.text:
                     original_text = shape.text
                     redacted_text = redact_text(original_text)
                     
-                    if shape.has_text_frame and original_text != redacted_text:
+                    if shape.has_text_frame:
                         shape.text_frame.clear()
-                        p = shape.text_frame.paragraphs[0] if shape.text_frame.paragraphs else shape.text_frame.add_paragraph()
-                        run = p.add_run()
+                        p = shape.text_frame.paragraphs[0]
+                        run = p.runs[0] if p.runs else p.add_run()
                         run.text = redacted_text
                 
-                # Redact text in tables
                 if shape.has_table:
                     table = shape.table
                     for row in table.rows:
@@ -316,30 +292,11 @@ def redact_ppt(input_path, output_path):
                             if cell.text:
                                 original_text = cell.text
                                 redacted_text = redact_text(original_text)
-                                if original_text != redacted_text:
-                                    cell.text_frame.clear()
-                                    p = cell.text_frame.paragraphs[0] if cell.text_frame.paragraphs else cell.text_frame.add_paragraph()
-                                    run = p.add_run()
-                                    run.text = redacted_text
-                
-                # Redact images (blur faces)
-                if shape.shape_type == 13: # 13 is the type for a Picture
-                    shapes_to_replace.append(shape)
-
-            for shape in shapes_to_replace:
-                image = shape.image
-                image_bytes = image.blob
-                pil_image = Image.open(io.BytesIO(image_bytes))
-                processed_image = pil_image.convert("RGB")
-                processed_image = blur_faces(processed_image)
-                processed_image = detect_and_blur_codes(processed_image)
-                
-                with io.BytesIO() as output:
-                    processed_image.save(output, format='PNG')
-                    slide.shapes.add_picture(output, shape.left, shape.top, width=shape.width, height=shape.height)
-                    sp = shape._element
-                    sp.getparent().remove(sp)
-
+                                cell.text_frame.clear()
+                                p = cell.text_frame.paragraphs[0]
+                                run = p.runs[0] if p.runs else p.add_run()
+                                run.text = redacted_text
+        
         prs.save(output_path)
         return output_path
     except Exception as e:
@@ -355,8 +312,8 @@ def extract_from_image(path):
 
 def is_sensitive_text(text):
     sensitive_patterns = [
-        r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+\b",
-        r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+        r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
+        r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
         r"\b\d{4}\s?\d{4}\s?\d{4}\b",
         r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
         r"\b(?:AKIA|ASIA|AIDA|AROA)[A-Z0-9]{16}\b",
@@ -380,8 +337,8 @@ def is_sensitive_text(text):
 
 def redact_text(text):
     patterns = {
-        "EMAIL": r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+\b",
-        "PHONE": r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+        "EMAIL": r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
+        "PHONE": r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b",
         "AADHAAR": r"\b\d{4}\s?\d{4}\s?\d{4}\b",
         "PAN": r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
         "VEHICLE": r"\b[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}\b",
@@ -442,72 +399,67 @@ def redact_text(text):
     return text
 
 def redact_image_text(img):
-    # New approach: Process text blocks to handle multi-word patterns like Aadhaar
     data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+    n_boxes = len(data['level'])
     
-    # Group words by block
-    blocks = {}
-    for i in range(len(data['level'])):
-        if data['text'][i].strip():
-            block_num = data['block_num'][i]
-            if block_num not in blocks:
-                blocks[block_num] = []
-            blocks[block_num].append(i)
-
-    sensitive_patterns = [
-        r"\b\d{4}\s?\d{4}\s?\d{4}\b",  # Aadhaar
-        r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+\b",
-        r"\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+    patterns = [
+        r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+",
+        r"(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}",
+        r"\b\d{4}\s?\d{4}\s?\d{4}\b",
         r"\b[A-Z]{5}[0-9]{4}[A-Z]\b",
         r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
         r"[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,2}[ -]?\d{4}",
+        r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:/\d{1,2})?\b",
+        r"\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b",
+        r"\b(?:AKIA|ASIA|AIDA|AROA)[A-Z0-9]{16}\b",
+        r"\bAIza[0-9A-Za-z\-_]{35}\b",
+        r"\bghp_[A-Za-z0-9]{36}\b",
+        r"\beyJ[A-Za-z0-9_\-]+\.",
+        r"\b\d{12}\b",
+        r"\barn:aws:",
+        r"\b(?:\d{4}[-\s]?){3}\d{4}\b",
+        r"\b\d{3}-\d{2}-\d{4}\b",
+        r"\b[A-Za-z0-9]{30,}\b",
     ]
     
-    # Add more comprehensive patterns from redact_text
-    sensitive_patterns.extend([
-        r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:/\d{1,2})?\b", # IPV4
-        r"\b(?:[0-9A-Fa-f]{2}[:-]){5}(?:[0-9A-Fa-f]{2})\b", # MAC_ADDRESS
-        r"\b(?:AKIA|ASIA|AIDA|AROA)[A-Z0-9]{16}\b", # AWS_ACCESS_KEY
-        r"\bAIza[0-9A-Za-z\-_]{35}\b", # GOOGLE_API_KEY
-        r"\bghp_[A-Za-z0-9]{36}\b", # GITHUB_TOKEN
-        r"\beyJ[A-Za-z0-9_\-]+\.", # JWT
-        r"\b\d{12}\b", # AWS_ACCOUNT_ID
-        r"\b(?:\d{4}[-\s]?){3}\d{4}\b", # CREDIT_CARD
-    ])
+    for i in range(n_boxes):
+        text = data['text'][i].strip()
+        if not text:
+            continue
 
-    for block_num, word_indices in blocks.items():
-        block_text = " ".join([data['text'][i] for i in word_indices])
+        sensitive = False
         
-        for pattern in sensitive_patterns:
-            for match in re.finditer(pattern, block_text):
-                start, end = match.span()
-                
-                # Find which words correspond to the match
-                current_pos = 0
-                matched_indices = []
-                for i in word_indices:
-                    word = data['text'][i]
-                    word_len = len(word)
-                    if start <= current_pos < end or start < current_pos + word_len <= end:
-                        matched_indices.append(i)
-                    current_pos += word_len + 1 # +1 for space
-
-                if matched_indices:
-                    x1 = min(data['left'][i] for i in matched_indices)
-                    y1 = min(data['top'][i] for i in matched_indices)
-                    x2 = max(data['left'][i] + data['width'][i] for i in matched_indices)
-                    y2 = max(data['top'][i] + data['height'][i] for i in matched_indices)
-                    
-                    padding = 8
-                    x = max(0, x1 - padding)
-                    y = max(0, y1 - padding)
-                    w = min(img.width - x, (x2 - x1) + 2 * padding)
-                    h = min(img.height - y, (y2 - y1) + 2 * padding)
-                    
-                    if w > 0 and h > 0:
-                        region = img.crop((x, y, x + w, y + h))
-                        region = region.filter(ImageFilter.GaussianBlur(30))
-                        img.paste(region, (x, y))
+        for pattern in patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                sensitive = True
+                break
+        
+        if re.search(r'\b\d{8,}\b', text):
+            sensitive = True
+        
+        if re.search(r'[A-Z]{3,}[0-9]{3,}', text):
+            sensitive = True
+        
+        if not sensitive and len(text) > 2:
+            try:
+                doc = nlp(text)
+                sensitive = any(ent.label_ in ["PERSON", "GPE", "ORG", "LOC", "FAC"] for ent in doc.ents)
+            except:
+                if re.search(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text):
+                    sensitive = True
+        
+        if sensitive:
+            x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+            padding = 8
+            x = max(0, x - padding)
+            y = max(0, y - padding)
+            w = min(img.width - x, w + 2 * padding)
+            h = min(img.height - y, h + 2 * padding)
+            
+            if w > 0 and h > 0:
+                region = img.crop((x, y, x + w, y + h))
+                region = region.filter(ImageFilter.GaussianBlur(30))
+                img.paste(region, (x, y))
     
     return img
 
