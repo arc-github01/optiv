@@ -602,13 +602,79 @@ def redact_image_text(img):
 
 
 def detect_and_blur_codes(img):
-    """Blur small images that might be QR codes or barcodes"""
+    """Detect and blur QR codes, barcodes, and logos using pattern detection"""
     try:
-        # Simple approach: blur very small images (likely QR/barcodes)
-        if img.width < 500 and img.height < 500:
-            img = img.filter(ImageFilter.GaussianBlur(35))
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        
+        # Detect QR codes using contours and pattern matching
+        _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        qr_candidates = []
+        for contour in contours:
+            approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+            area = cv2.contourArea(contour)
+            
+            # QR codes typically have square shapes with specific area
+            if len(approx) == 4 and 1000 < area < 100000:
+                x, y, w, h = cv2.boundingRect(contour)
+                aspect_ratio = float(w) / h if h > 0 else 0
+                
+                # Check if it's roughly square (QR codes are square)
+                if 0.8 <= aspect_ratio <= 1.2:
+                    qr_candidates.append((x, y, w, h))
+        
+        # Blur detected QR code regions
+        for x, y, w, h in qr_candidates:
+            padding = 10
+            x1 = max(0, x - padding)
+            y1 = max(0, y - padding)
+            x2 = min(img.width, x + w + padding)
+            y2 = min(img.height, y + h + padding)
+            
+            if x2 > x1 and y2 > y1:
+                region = img.crop((x1, y1, x2, y2))
+                region = region.filter(ImageFilter.GaussianBlur(35))
+                img.paste(region, (x1, y1))
+        
+        # Detect logos/icons: small, high-contrast square/circular regions
+        edges = cv2.Canny(gray, 50, 150)
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        logo_candidates = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            # Small to medium sized objects (likely logos)
+            if 500 < area < 50000:
+                x, y, w, h = cv2.boundingRect(contour)
+                aspect_ratio = float(w) / h if h > 0 else 0
+                
+                # Check if roughly square or circular (common for logos)
+                if 0.7 <= aspect_ratio <= 1.3:
+                    # Calculate edge density (logos have many edges)
+                    roi = edges[y:y+h, x:x+w]
+                    edge_density = np.sum(roi > 0) / (w * h) if w * h > 0 else 0
+                    
+                    # High edge density indicates logo/icon
+                    if edge_density > 0.15:
+                        logo_candidates.append((x, y, w, h))
+        
+        # Blur detected logo regions
+        for x, y, w, h in logo_candidates:
+            padding = 5
+            x1 = max(0, x - padding)
+            y1 = max(0, y - padding)
+            x2 = min(img.width, x + w + padding)
+            y2 = min(img.height, y + h + padding)
+            
+            if x2 > x1 and y2 > y1:
+                region = img.crop((x1, y1, x2, y2))
+                region = region.filter(ImageFilter.GaussianBlur(25))
+                img.paste(region, (x1, y1))
+                
     except Exception as e:
-        print(f"Code detection error: {e}")
+        print(f"Code/logo detection error: {e}")
     
     return img
 
