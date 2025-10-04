@@ -4,3 +4,4 @@ env/
 ENV/
 .venv/
 input_files/redacted_output
+test
