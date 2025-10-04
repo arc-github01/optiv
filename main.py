@@ -895,38 +895,48 @@ def process_directory(directory_path):
             border-collapse: collapse;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             margin-top: 20px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            border-radius: 10px;
+            overflow: hidden;
         }
         .analysis-table th {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             font-weight: 600;
-            padding: 12px 15px;
+            padding: 15px;
             text-align: left;
-            border: 1px solid #ddd;
+            border: none;
+            font-size: 1.1em;
         }
         .analysis-table td {
-            padding: 12px 15px;
-            border: 1px solid #ddd;
+            padding: 15px;
+            border: none;
             vertical-align: top;
             line-height: 1.4;
+            color: #e0e0e0;
         }
         .analysis-table tr:nth-child(even) {
-            background-color: #000000;
+            background-color: #2d3748;
         }
         .analysis-table tr:nth-child(odd) {
-            background-color: #000000;
+            background-color: #1a202c;
+        }
+        .analysis-table tr:hover {
+            background-color: #4a5568;
+            transition: background-color 0.3s ease;
         }
         
         .file-type {
             font-weight: bold;
-            color: #5b9bd5;
+            color: #63b3ed;
         }
         .key-findings {
             white-space: pre-line;
+            color: #cbd5e0;
         }
         .key-findings::before {
             content: "• ";
+            color: #68d391;
         }
     </style>
     
@@ -949,9 +959,9 @@ def process_directory(directory_path):
         
         html_output += f"""
             <tr>
-                <td>{row['File Name']}</td>
+                <td style="color: #ffffff; font-weight: 600;">{row['File Name']}</td>
                 <td class="file-type">{row['File Type']}</td>
-                <td>{row['File Description']}</td>
+                <td style="color: #e2e8f0;">{row['File Description']}</td>
                 <td class="key-findings">{findings_formatted}</td>
             </tr>
         """
@@ -970,32 +980,336 @@ def process_directory(directory_path):
     return html_output, image_gallery, download_info
 
 
-with gr.Blocks(title="Enhanced Batch File Analyzer & Redactor", theme=gr.themes.Soft()) as iface:
-    gr.Markdown("""
-    # Enhanced Document Redaction System
+# Enhanced UI with DARK theme
+custom_css = """
+:root {
+    --primary: #4361ee;
+    --secondary: #3a0ca3;
+    --accent: #7209b7;
+    --success: #4cc9f0;
+    --warning: #f72585;
+    --dark-bg: #0f0f23;
+    --dark-card: #1a1a2e;
+    --dark-text: #e2e8f0;
+    --dark-border: #2d3748;
+}
+
+.gradio-container {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%) !important;
+    min-height: 100vh;
+    color: var(--dark-text);
+}
+
+.main-container {
+    background: rgba(26, 26, 46, 0.95) !important;
+    backdrop-filter: blur(10px);
+    border-radius: 20px;
+    box-shadow: 0 20px 40px rgba(0,0,0,0.3);
+    margin: 20px;
+    padding: 30px;
+    border: 1px solid var(--dark-border);
+}
+
+.header {
+    text-align: center;
+    margin-bottom: 30px;
+    padding: 30px;
+    background: linear-gradient(135deg, var(--primary), var(--secondary));
+    border-radius: 15px;
+    color: white;
+    box-shadow: 0 10px 20px rgba(67, 97, 238, 0.3);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+.header h1 {
+    margin: 0;
+    font-size: 2.5em;
+    font-weight: 700;
+    text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+}
+
+.header p {
+    margin: 10px 0 0 0;
+    font-size: 1.2em;
+    opacity: 0.9;
+}
+
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 20px;
+    margin: 30px 0;
+}
+
+.feature-card {
+    background: var(--dark-card);
+    padding: 25px;
+    border-radius: 15px;
+    text-align: center;
+    box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    border-left: 5px solid var(--primary);
+    border: 1px solid var(--dark-border);
+    color: var(--dark-text);
+}
+
+.feature-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 15px 30px rgba(0,0,0,0.4);
+    border-left: 5px solid var(--accent);
+}
+
+.feature-icon {
+    font-size: 2.5em;
+    margin-bottom: 15px;
+    color: var(--primary);
+}
+
+.feature-card h3 {
+    margin: 0 0 10px 0;
+    color: white;
+    font-weight: 600;
+}
+
+.feature-card p {
+    margin: 0;
+    color: #cbd5e0;
+    line-height: 1.5;
+}
+
+.input-section {
+    background: var(--dark-card);
+    padding: 30px;
+    border-radius: 15px;
+    box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+    margin: 20px 0;
+    border: 1px solid var(--dark-border);
+}
+
+.input-section h2 {
+    color: white;
+    margin-bottom: 20px;
+    font-weight: 600;
+}
+
+.directory-input {
+    background: #2d3748;
+    border: 2px dashed #4a5568;
+    border-radius: 10px;
+    padding: 20px;
+    transition: all 0.3s ease;
+    color: white;
+}
+
+.directory-input:hover {
+    border-color: var(--primary);
+    background: #374151;
+}
+
+.directory-input label {
+    color: white !important;
+}
+
+.analyze-btn {
+    background: linear-gradient(135deg, var(--primary), var(--secondary)) !important;
+    color: white !important;
+    border: none !important;
+    padding: 15px 40px !important;
+    border-radius: 50px !important;
+    font-size: 1.1em !important;
+    font-weight: 600 !important;
+    transition: all 0.3s ease !important;
+    box-shadow: 0 5px 15px rgba(67, 97, 238, 0.4) !important;
+}
+
+.analyze-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(67, 97, 238, 0.6) !important;
+}
+
+.results-section {
+    background: var(--dark-card);
+    padding: 30px;
+    border-radius: 15px;
+    box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+    margin: 20px 0;
+    border: 1px solid var(--dark-border);
+}
+
+.results-section h2 {
+    color: white;
+    margin-bottom: 20px;
+    font-weight: 600;
+    border-bottom: 3px solid var(--success);
+    padding-bottom: 10px;
+}
+
+.file-type-badge {
+    display: inline-block;
+    background: var(--accent);
+    color: white;
+    padding: 5px 15px;
+    border-radius: 20px;
+    font-size: 0.9em;
+    font-weight: 600;
+    margin: 5px;
+}
+
+.processing-status {
+    background: linear-gradient(135deg, var(--success), #4895ef);
+    color: white;
+    padding: 20px;
+    border-radius: 10px;
+    text-align: center;
+    margin: 20px 0;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+    100% { transform: scale(1); }
+}
+
+.footer {
+    text-align: center;
+    margin-top: 40px;
+    padding: 20px;
+    color: #a0aec0;
+    border-top: 1px solid var(--dark-border);
+}
+
+.supported-formats {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 20px 0;
+}
+
+.format-badge {
+    background: #2d3748;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-weight: 600;
+    color: var(--primary);
+    border: 2px solid var(--primary);
+}
+
+/* Text color fixes */
+label {
+    color: white !important;
+}
+
+.gr-textbox, .gr-input {
+    color: white !important;
+}
+
+.gr-markdown {
+    color: var(--dark-text) !important;
+}
+
+.gr-markdown h1, .gr-markdown h2, .gr-markdown h3 {
+    color: white !important;
+}
+"""
+
+# Create the enhanced UI with DARK theme
+with gr.Blocks(css=custom_css, theme=gr.themes.Soft(primary_hue="blue")) as iface:
+    with gr.Column(elem_classes="main-container"):
+        # Header Section
+        with gr.Column(elem_classes="header"):
+            gr.Markdown("""
+            # 🔒 Advanced Document Redaction System
+            ### Secure • Intelligent • Automated
+            """)
+        
+        # Features Grid
+        with gr.Row(elem_classes="feature-grid"):
+            with gr.Column(elem_classes="feature-card"):
+                gr.Markdown("""
+                <div class='feature-icon'>🛡️</div>
+                <h3>Smart Detection</h3>
+                <p>Advanced pattern recognition for sensitive data including PII, credentials, and confidential information</p>
+                """)
+            
+            with gr.Column(elem_classes="feature-card"):
+                gr.Markdown("""
+                <div class='feature-icon'>🤖</div>
+                <h3>AI-Powered Analysis</h3>
+                <p>Gemini AI integration for intelligent content analysis and insights generation</p>
+                """)
+            
+            with gr.Column(elem_classes="feature-card"):
+                gr.Markdown("""
+                <div class='feature-icon'>🎯</div>
+                <h3>Multi-Format Support</h3>
+                <p>Process PDFs, Word documents, Excel files, PowerPoint, and images seamlessly</p>
+                """)
+            
+            with gr.Column(elem_classes="feature-card"):
+                gr.Markdown("""
+                <div class='feature-icon'>⚡</div>
+                <h3>Batch Processing</h3>
+                <p>Automatically analyze and redact multiple files in directory with single click</p>
+                """)
+        
+        # Supported Formats
+        with gr.Row():
+            with gr.Column():
+                gr.Markdown("### 📁 Supported File Formats")
+                with gr.Row(elem_classes="supported-formats"):
+                    gr.Markdown("<div class='format-badge'>PDF</div>")
+                    gr.Markdown("<div class='format-badge'>DOCX</div>")
+                    gr.Markdown("<div class='format-badge'>XLSX</div>")
+                    gr.Markdown("<div class='format-badge'>PPTX</div>")
+                    gr.Markdown("<div class='format-badge'>JPG/PNG</div>")
+        
+        # Input Section
+        with gr.Column(elem_classes="input-section"):
+            gr.Markdown("""
+            ## 🚀 Get Started
+            Enter the directory path containing your documents to begin automated analysis and redaction
+            """)
+            
+            with gr.Row():
+                directory_input = gr.Textbox(
+                    label="📂 Directory Path",
+                    placeholder="C:/Users/YourName/Documents/FilesToAnalyze",
+                    lines=1,
+                    info="Enter the full path to the directory containing your files",
+                    elem_classes="directory-input"
+                )
+            
+            with gr.Row():
+                analyze_btn = gr.Button(
+                    "🔍 Analyze & Redact All Files", 
+                    variant="primary", 
+                    size="lg",
+                    elem_classes="analyze-btn"
+                )
+        
+        # Results Section
+        with gr.Column(elem_classes="results-section"):
+            gr.Markdown("## 📊 Analysis Results")
+            
+            with gr.Row():
+                output_html = gr.HTML(
+                    label="📋 Document Analysis Report",
+                    show_label=True
+                )
+        
+        # Footer
+        with gr.Column(elem_classes="footer"):
+            gr.Markdown("""
+            ---
+            **🔐 Security First** • **🤖 Powered by AI** • **⚡ Built for Performance**
+            
+            *Your documents are processed securely and never stored on our servers*
+            """)
     
-    Upload documents or specify a directory to automatically:
-    - **Detect & redact** sensitive information (PII, credentials, addresses, etc.)
-    - **Blur faces** in images
-    - **Detect QR/barcodes** and blur them
-    - **Analyze content** using AI
-    
-    Supported formats: PDF, DOCX, XLSX, PPTX, JPG, PNG
-    """)
-    
-    with gr.Row():
-        directory_input = gr.Textbox(
-            label="Directory Path",
-            placeholder="C:/Users/YourName/Documents/FilesToAnalyze",
-            lines=1,
-            info="Enter the full path to the directory containing your files"
-        )
-    
-    analyze_btn = gr.Button("Analyze & Redact All Files", variant="primary", size="lg")
-    
-    with gr.Row():
-        output_html = gr.HTML(label="Analysis Results")
-    
+    # Connect the functionality
     analyze_btn.click(
         fn=process_directory,
         inputs=[directory_input],
@@ -1003,4 +1317,9 @@ with gr.Blocks(title="Enhanced Batch File Analyzer & Redactor", theme=gr.themes.
     )
 
 if __name__ == "__main__":
-    iface.launch(share=False, server_name="0.0.0.0", server_port=7860)
+    iface.launch(
+        share=False, 
+        server_name="0.0.0.0", 
+        server_port=7860,
+        show_error=True
+    )
