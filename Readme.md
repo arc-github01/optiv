@@ -35,7 +35,7 @@ The Enhanced Batch File Analyzer & Redactor is a powerful tool to automatically 
 
 ## Installation
 1. Clone this repository:
-git clone https://github.com/yourusername/your-repo.git
+git clone https://github.com/arc-github01/optiv.git
 cd your-repo
 
 2. Install dependencies:
