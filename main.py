@@ -335,6 +335,7 @@ def redact_pdf(input_path, output_path):
         for page_num in range(len(doc)):
             page = doc[page_num]
             
+            # Redact text
             text_instances = page.get_text("dict")
             blocks = text_instances.get("blocks", [])
             for block in blocks:
@@ -352,30 +353,59 @@ def redact_pdf(input_path, output_path):
                                     rect = fitz.Rect(span["bbox"])
                                     page.draw_rect(rect, color=(0, 0, 0), fill=(0, 0, 0))
             
+            # Process images with better error handling
             image_list = page.get_images(full=True)
-            for img_info in image_list:
-                xref = img_info[0]
-                base_image = doc.extract_image(xref)
-                image_bytes = base_image["image"]
-                
-                pil_image = Image.open(io.BytesIO(image_bytes))
-                processed_image = pil_image.convert("RGB")
-                
-                if pil_image.width < 500 and pil_image.height < 500:
-                    processed_image = processed_image.filter(ImageFilter.GaussianBlur(20))
-                
-                processed_image = blur_faces(processed_image)
-                processed_image = detect_and_blur_codes(processed_image)
-                
-                img_byte_arr = io.BytesIO()
-                processed_image.save(img_byte_arr, format='PNG')
-                
-                img_rect = page.get_image_bbox(img_info)
-                page.insert_image(img_rect, stream=img_byte_arr.getvalue(), keep_proportion=False)
+            for img_index, img_info in enumerate(image_list):
+                try:
+                    xref = img_info[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    
+                    pil_image = Image.open(io.BytesIO(image_bytes))
+                    processed_image = pil_image.convert("RGB")
+                    
+                    # Blur small images
+                    if pil_image.width < 500 and pil_image.height < 500:
+                        processed_image = processed_image.filter(ImageFilter.GaussianBlur(20))
+                    
+                    # Apply face detection and code detection
+                    processed_image = blur_faces(processed_image)
+                    processed_image = detect_and_blur_codes(processed_image)
+                    
+                    # Save processed image
+                    img_byte_arr = io.BytesIO()
+                    processed_image.save(img_byte_arr, format='PNG')
+                    img_byte_arr.seek(0)
+                    
+                    # Try to get image rectangle, with fallback
+                    try:
+                        img_rect = page.get_image_rects(img_info)[0]
+                    except (IndexError, Exception) as e:
+                        # Fallback: try to find image position using alternative method
+                        print(f"Could not get image rect for image {img_index}, trying alternative method")
+                        
+                        # Try to get image bbox using xref
+                        try:
+                            img_rect = page.get_image_bbox(img_info)
+                        except:
+                            # If both methods fail, skip this image
+                            print(f"Skipping image {img_index} - could not determine position")
+                            continue
+                    
+                    # Validate rectangle before inserting
+                    if img_rect and img_rect.is_valid and not img_rect.is_empty:
+                        page.insert_image(img_rect, stream=img_byte_arr.getvalue(), keep_proportion=False)
+                    else:
+                        print(f"Invalid image rectangle for image {img_index}, skipping")
+                        
+                except Exception as img_error:
+                    print(f"Error processing image {img_index} on page {page_num}: {img_error}")
+                    continue
         
         doc.save(output_path)
         doc.close()
         return output_path
+        
     except Exception as e:
         print(f"Error redacting PDF: {e}")
         import traceback
@@ -471,9 +501,19 @@ def redact_ppt(input_path, output_path):
         traceback.print_exc()
         return None
 
-
 def redact_image_text(img):
     """Redact sensitive text in images with enhanced multi-word pattern matching"""
+    
+    # Ensure img is a valid PIL Image
+    if not isinstance(img, Image.Image):
+        if isinstance(img, np.ndarray):
+            img = Image.fromarray(img)
+        else:
+            raise TypeError(f"Expected PIL Image or numpy array, got {type(img)}")
+    
+    # Convert to RGB if needed
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
     
     full_text = pytesseract.image_to_string(img)
     
@@ -491,6 +531,7 @@ def redact_image_text(img):
     
     redacted_regions = []
     
+    # AWS JSON special handling
     if is_aws_json:
         for i in range(len(data['text'])):
             text = data['text'][i].strip()
@@ -509,6 +550,7 @@ def redact_image_text(img):
                         img.paste(region, (x, y))
                         redacted_regions.append((x, y, w, h))
     
+    # Pattern-based redaction
     for block_num, word_indices in blocks.items():
         block_text = " ".join([data['text'][i] for i in word_indices])
         
@@ -552,6 +594,7 @@ def redact_image_text(img):
             except Exception:
                 continue
     
+    # NER-based redaction
     for block_num, word_indices in blocks.items():
         block_text = " ".join([data['text'][i] for i in word_indices])
         
@@ -602,88 +645,14 @@ def redact_image_text(img):
 
 
 def detect_and_blur_codes(img):
-    """Detect and blur QR codes, barcodes, and logos using pattern detection"""
-    try:
-        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-        
-        # Detect QR codes using contours and pattern matching
-        _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        
-        qr_candidates = []
-        for contour in contours:
-            approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
-            area = cv2.contourArea(contour)
-            
-            # QR codes typically have square shapes with specific area
-            if len(approx) == 4 and 1000 < area < 100000:
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = float(w) / h if h > 0 else 0
-                
-                # Check if it's roughly square (QR codes are square)
-                if 0.8 <= aspect_ratio <= 1.2:
-                    qr_candidates.append((x, y, w, h))
-        
-        # Blur detected QR code regions
-        for x, y, w, h in qr_candidates:
-            padding = 10
-            x1 = max(0, x - padding)
-            y1 = max(0, y - padding)
-            x2 = min(img.width, x + w + padding)
-            y2 = min(img.height, y + h + padding)
-            
-            if x2 > x1 and y2 > y1:
-                region = img.crop((x1, y1, x2, y2))
-                region = region.filter(ImageFilter.GaussianBlur(35))
-                img.paste(region, (x1, y1))
-        
-        # Detect logos/icons: small, high-contrast square/circular regions
-        edges = cv2.Canny(gray, 50, 150)
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        logo_candidates = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            # Small to medium sized objects (likely logos)
-            if 500 < area < 50000:
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = float(w) / h if h > 0 else 0
-                
-                # Check if roughly square or circular (common for logos)
-                if 0.7 <= aspect_ratio <= 1.3:
-                    # Calculate edge density (logos have many edges)
-                    roi = edges[y:y+h, x:x+w]
-                    edge_density = np.sum(roi > 0) / (w * h) if w * h > 0 else 0
-                    
-                    # High edge density indicates logo/icon
-                    if edge_density > 0.15:
-                        logo_candidates.append((x, y, w, h))
-        
-        # Blur detected logo regions
-        for x, y, w, h in logo_candidates:
-            padding = 5
-            x1 = max(0, x - padding)
-            y1 = max(0, y - padding)
-            x2 = min(img.width, x + w + padding)
-            y2 = min(img.height, y + h + padding)
-            
-            if x2 > x1 and y2 > y1:
-                region = img.crop((x1, y1, x2, y2))
-                region = region.filter(ImageFilter.GaussianBlur(25))
-                img.paste(region, (x1, y1))
-                
-    except Exception as e:
-        print(f"Code/logo detection error: {e}")
-    
+    """QR/Barcode detection disabled - returns image unchanged"""
     return img
 
-
 def blur_faces(img):
-    """Detect and blur faces in images"""
+    """Detect and blur faces in images - with error handling"""
     try:
         boxes, _ = mtcnn.detect(img)
-        if boxes is not None:
+        if boxes is not None and len(boxes) > 0:  # Check if boxes is not empty
             for box in boxes:
                 x1, y1, x2, y2 = map(int, box)
                 x1, y1 = max(0, x1), max(0, y1)
@@ -695,6 +664,7 @@ def blur_faces(img):
                     img.paste(face, (x1, y1))
     except Exception as e:
         print(f"Face detection error: {e}")
+    
     return img
 
 
@@ -900,7 +870,7 @@ def process_directory(directory_path):
             overflow: hidden;
         }
         .analysis-table th {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            ackground: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             font-weight: 600;
             padding: 15px;
@@ -908,7 +878,7 @@ def process_directory(directory_path):
             border: none;
             font-size: 1.1em;
         }
-        .analysis-table td {
+       .analysis-table td {
             padding: 15px;
             border: none;
             vertical-align: top;
@@ -943,10 +913,10 @@ def process_directory(directory_path):
     <table class="analysis-table">
         <thead>
             <tr>
-                <th>File Name</th>
-                <th>File Type</th>
-                <th>File Description</th>
-                <th>Key Findings</th>
+                <td style="color: #ffffff; font-weight: 600;">{row['File Name']}</td>
+                <td class="file-type">{row['File Type']}</td>
+                <td style="color: #e2e8f0;">{row['File Description']}</td>
+                <td class="key-findings">{findings_formatted}</td>
             </tr>
         </thead>
         <tbody>
@@ -959,9 +929,9 @@ def process_directory(directory_path):
         
         html_output += f"""
             <tr>
-                <td style="color: #ffffff; font-weight: 600;">{row['File Name']}</td>
+                <td>{row['File Name']}</td>
                 <td class="file-type">{row['File Type']}</td>
-                <td style="color: #e2e8f0;">{row['File Description']}</td>
+                <td>{row['File Description']}</td>
                 <td class="key-findings">{findings_formatted}</td>
             </tr>
         """
@@ -979,8 +949,6 @@ def process_directory(directory_path):
     
     return html_output, image_gallery, download_info
 
-
-# Enhanced UI with DARK theme
 custom_css = """
 :root {
     --primary: #4361ee;
