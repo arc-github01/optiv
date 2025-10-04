@@ -51,20 +51,8 @@ pip install -r requirements.txt
 4. Click **Analyze / Redact All Files**.
 5. View the analysis results, download redacted files from the UI.
 
-## Contributing
-Contributions are welcome! Please follow these steps:
-- Fork the repository
-- Create a new branch (`git checkout -b feature-branch`)
-- Make your changes
-- Test thoroughly
-- Submit a pull request describing your enhancements or fixes
 
-## License
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contact
-For questions, issues, or suggestions, reach out via your GitHub profile or open an issue in this repository.
 
 ---
 
-*This README follows a standard, clear GitHub-friendly structure to make the project accessible and engaging.* 
+

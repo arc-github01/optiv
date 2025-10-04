@@ -1,47 +1,25 @@
 import os
 import io
 import re
-import zipfile
-import tempfile
-import shutil
 import fitz
 import docx
 from pathlib import Path
 import pandas as pd
 import cv2
 import numpy as np
-from PIL import Image, ImageFilter, ImageDraw
+from PIL import Image, ImageFilter
 import pytesseract
 from facenet_pytorch import MTCNN
-from transformers import ViTFeatureExtractor, ViTForImageClassification
-
 import spacy
-
 import openpyxl
 from openpyxl.styles import PatternFill, Font
 from pptx import Presentation
-from pptx.util import Inches
-
 import gradio as gr
 import google.generativeai as genai
 
-import torch
-
-from ctypes import CDLL
-from pyzbar import pyzbar
-
-
-dll_path = os.path.join(os.path.dirname(__file__), "libzbar-64.dll")
-CDLL(dll_path)
-
-
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-
 nlp = spacy.load("en_core_web_sm")
-
-feature_extractor = ViTFeatureExtractor.from_pretrained("google/vit-base-patch16-224")
-vit_model = ViTForImageClassification.from_pretrained("google/vit-base-patch16-224")
 mtcnn = MTCNN(keep_all=True, device="cpu")
 genai.configure(api_key="your_api_key")
 
@@ -101,7 +79,7 @@ SENSITIVE_PATTERNS = {
     "PINCODE_INDIA": r"\b\d{6}\b",
     "POSTAL_CODE_CANADA": r"\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b",
     
-    # Addresses - Comprehensive patterns
+    # Addresses
     "ADDRESS_STREET": r"\b\d+\s+(?:[A-Z][a-z]+\s+){1,5}(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Way|Place|Pl|Parkway|Pkwy|Highway|Hwy|Terrace|Ter)\b",
     "ADDRESS_PO_BOX": r"\bP\.?O\.?\s*Box\s+\d+\b",
     "ADDRESS_UNIT": r"\b(?:Apt|Apartment|Suite|Unit|#)\s*[A-Z0-9\-]+\b",
@@ -243,7 +221,6 @@ def is_sensitive_text(text):
     
     text_str = str(text)
     
-    # Check against all patterns
     for pattern_name, pattern in SENSITIVE_PATTERNS.items():
         try:
             if re.search(pattern, text_str, re.IGNORECASE):
@@ -251,7 +228,6 @@ def is_sensitive_text(text):
         except:
             pass
     
-    # NER check for names and organizations
     try:
         if len(text_str) > 2 and not text_str.isdigit():
             doc = nlp(text_str)
@@ -268,7 +244,6 @@ def redact_text(text):
     if not text:
         return text
     
-    # Priority order for patterns
     priority_patterns = [
         "PRIVATE_KEY", "JWT_TOKEN", "BEARER_TOKEN", "AWS_ARN", 
         "AWS_ACCESS_KEY", "AWS_SECRET_KEY", "GOOGLE_API_KEY",
@@ -285,17 +260,14 @@ def redact_text(text):
         "ALPHANUMERIC_ID_1", "ALPHANUMERIC_ID_2", "ALPHANUMERIC_ID_3", "ALPHANUMERIC_ID_4"
     ]
     
-    # Apply priority patterns first
     for label in priority_patterns:
         if label in SENSITIVE_PATTERNS:
             text = re.sub(SENSITIVE_PATTERNS[label], f"[REDACTED_{label}]", text, flags=re.IGNORECASE)
     
-    # Apply remaining patterns
     for label, pattern in SENSITIVE_PATTERNS.items():
         if label not in priority_patterns:
             text = re.sub(pattern, f"[REDACTED_{label}]", text, flags=re.IGNORECASE)
     
-    # NER-based redaction
     try:
         doc = nlp(text)
         redacted_positions = []
@@ -335,8 +307,8 @@ def redact_excel(input_path, output_path):
             wb.save(output_path)
             return output_path
         else:
-            excel_file = pd.ExcelFile(input_path)
             output_path = output_path.replace('.xls', '.xlsx')
+            excel_file = pd.ExcelFile(input_path)
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 for sheet_name in excel_file.sheet_names:
                     df = pd.read_excel(input_path, sheet_name=sheet_name)
@@ -363,7 +335,6 @@ def redact_pdf(input_path, output_path):
         for page_num in range(len(doc)):
             page = doc[page_num]
             
-            # Redact text
             text_instances = page.get_text("dict")
             blocks = text_instances.get("blocks", [])
             for block in blocks:
@@ -381,7 +352,6 @@ def redact_pdf(input_path, output_path):
                                     rect = fitz.Rect(span["bbox"])
                                     page.draw_rect(rect, color=(0, 0, 0), fill=(0, 0, 0))
             
-            # Redact images
             image_list = page.get_images(full=True)
             for img_info in image_list:
                 xref = img_info[0]
@@ -505,16 +475,12 @@ def redact_ppt(input_path, output_path):
 def redact_image_text(img):
     """Redact sensitive text in images with enhanced multi-word pattern matching"""
     
-    # Get full text first to detect context
     full_text = pytesseract.image_to_string(img)
     
-    # Check if this looks like JSON/structured AWS data
     is_aws_json = bool(re.search(r'"(?:RoleId|Arn|AWS|AccountId|Sid|Effect|Principal|Action)"', full_text, re.IGNORECASE))
     
-    # Get detailed OCR data
     data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
     
-    # Group words by block for multi-word pattern detection
     blocks = {}
     for i in range(len(data['level'])):
         if data['text'][i].strip():
@@ -525,12 +491,10 @@ def redact_image_text(img):
     
     redacted_regions = []
     
-    # If AWS JSON detected, be more aggressive
     if is_aws_json:
         for i in range(len(data['text'])):
             text = data['text'][i].strip()
             if text and len(text) > 2:
-                # Redact anything that looks like AWS data
                 if re.search(r'(?:AKIA|ASIA|arn:aws|RoleId|Statement|Principal|Allow|Deny|\d{12}|"[A-Za-z]+")', text, re.IGNORECASE):
                     x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
                     padding = 8
@@ -545,17 +509,14 @@ def redact_image_text(img):
                         img.paste(region, (x, y))
                         redacted_regions.append((x, y, w, h))
     
-    # Process blocks for multi-word patterns
     for block_num, word_indices in blocks.items():
         block_text = " ".join([data['text'][i] for i in word_indices])
         
-        # Check block against all sensitive patterns
         for pattern_name, pattern in SENSITIVE_PATTERNS.items():
             try:
                 for match in re.finditer(pattern, block_text, re.IGNORECASE):
                     start, end = match.span()
                     
-                    # Find words that correspond to the match
                     current_pos = 0
                     matched_indices = []
                     for i in word_indices:
@@ -577,7 +538,6 @@ def redact_image_text(img):
                         w = min(img.width - x, (x2 - x1) + 2 * padding)
                         h = min(img.height - y, (y2 - y1) + 2 * padding)
                         
-                        # Check for overlap
                         overlaps = False
                         for rx, ry, rw, rh in redacted_regions:
                             if not (x + w < rx or x > rx + rw or y + h < ry or y > ry + rh):
@@ -589,10 +549,9 @@ def redact_image_text(img):
                             region = region.filter(ImageFilter.GaussianBlur(30))
                             img.paste(region, (x, y))
                             redacted_regions.append((x, y, w, h))
-            except Exception as e:
+            except Exception:
                 continue
     
-    # Check for person names using NER on block text
     for block_num, word_indices in blocks.items():
         block_text = " ".join([data['text'][i] for i in word_indices])
         
@@ -636,38 +595,20 @@ def redact_image_text(img):
                                 region = region.filter(ImageFilter.GaussianBlur(30))
                                 img.paste(region, (x, y))
                                 redacted_regions.append((x, y, w, h))
-        except Exception as e:
+        except Exception:
             continue
     
     return img
 
 
 def detect_and_blur_codes(img):
-    """Detect and blur QR codes and barcodes"""
+    """Blur small images that might be QR codes or barcodes"""
     try:
-        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-        decoded_objects = pyzbar.decode(img_cv)
-        
-        for obj in decoded_objects:
-            points = obj.polygon
-            if len(points) == 4:
-                x = min([p.x for p in points])
-                y = min([p.y for p in points])
-                w = max([p.x for p in points]) - x
-                h = max([p.y for p in points]) - y
-                
-                padding = 10
-                x = max(0, x - padding)
-                y = max(0, y - padding)
-                w = min(img.width - x, w + 2 * padding)
-                h = min(img.height - y, h + 2 * padding)
-                
-                if w > 0 and h > 0:
-                    region = img.crop((x, y, x + w, y + h))
-                    region = region.filter(ImageFilter.GaussianBlur(35))
-                    img.paste(region, (x, y))
+        # Simple approach: blur very small images (likely QR/barcodes)
+        if img.width < 500 and img.height < 500:
+            img = img.filter(ImageFilter.GaussianBlur(35))
     except Exception as e:
-        print(f"QR/Barcode detection error: {e}")
+        print(f"Code detection error: {e}")
     
     return img
 
@@ -811,7 +752,6 @@ def process_single_file(file_path):
             result["File Description"] = "Unsupported file type"
             return result
         
-        # Parse analysis results
         lines = analysis.split('\n')
         description_lines = []
         findings_lines = []
@@ -964,10 +904,9 @@ def process_directory(directory_path):
     return html_output, image_gallery, download_info
 
 
-# Gradio Interface
 with gr.Blocks(title="Enhanced Batch File Analyzer & Redactor", theme=gr.themes.Soft()) as iface:
     gr.Markdown("""
-    # 🔒 Enhanced Document Redaction System
+    # Enhanced Document Redaction System
     
     Upload documents or specify a directory to automatically:
     - **Detect & redact** sensitive information (PII, credentials, addresses, etc.)
@@ -980,23 +919,21 @@ with gr.Blocks(title="Enhanced Batch File Analyzer & Redactor", theme=gr.themes.
     
     with gr.Row():
         directory_input = gr.Textbox(
-            label="📁 Directory Path",
+            label="Directory Path",
             placeholder="C:/Users/YourName/Documents/FilesToAnalyze",
             lines=1,
             info="Enter the full path to the directory containing your files"
         )
     
-    analyze_btn = gr.Button("🚀 Analyze & Redact All Files", variant="primary", size="lg")
+    analyze_btn = gr.Button("Analyze & Redact All Files", variant="primary", size="lg")
     
     with gr.Row():
-        output_html = gr.HTML(label="📊 Analysis Results")
-    
-   
+        output_html = gr.HTML(label="Analysis Results")
     
     analyze_btn.click(
         fn=process_directory,
         inputs=[directory_input],
-        outputs=[output_html ]
+        outputs=[output_html]
     )
 
 if __name__ == "__main__":
