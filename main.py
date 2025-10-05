@@ -832,12 +832,22 @@ def process_directory(directory_path):
         return "Invalid directory path", None, None
     
     supported_extensions = ['.pdf', '.docx', '.xlsx', '.xls', '.pptx', '.ppt', '.jpg', '.jpeg', '.png']
-    files = []
     
     path_obj = Path(directory_path)
+    
+    # Use a set to avoid duplicate files
+    file_set = set()
+    
     for ext in supported_extensions:
-        files.extend(path_obj.glob(f'*{ext}'))
-        files.extend(path_obj.glob(f'*{ext.upper()}'))
+        # Find files with lowercase extension
+        for file_path in path_obj.glob(f'*{ext}'):
+            file_set.add(file_path)
+        # Find files with uppercase extension  
+        for file_path in path_obj.glob(f'*{ext.upper()}'):
+            file_set.add(file_path)
+    
+    # Convert set back to sorted list
+    files = sorted(file_set)
     
     if not files:
         return "No supported files found in directory", None, None
@@ -846,7 +856,7 @@ def process_directory(directory_path):
     processed_images = []
     redacted_files_list = []
     
-    for file_path in sorted(files):
+    for file_path in files:
         print(f"Processing: {file_path}")
         result = process_single_file(file_path)
         results.append(result)
@@ -870,7 +880,7 @@ def process_directory(directory_path):
             overflow: hidden;
         }
         .analysis-table th {
-            ackground: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             font-weight: 600;
             padding: 15px;
@@ -878,7 +888,7 @@ def process_directory(directory_path):
             border: none;
             font-size: 1.1em;
         }
-       .analysis-table td {
+        .analysis-table td {
             padding: 15px;
             border: none;
             vertical-align: top;
@@ -913,10 +923,10 @@ def process_directory(directory_path):
     <table class="analysis-table">
         <thead>
             <tr>
-                <td style="color: #ffffff; font-weight: 600;">{row['File Name']}</td>
-                <td class="file-type">{row['File Type']}</td>
-                <td style="color: #e2e8f0;">{row['File Description']}</td>
-                <td class="key-findings">{findings_formatted}</td>
+                <th>File Name</th>
+                <th>File Type</th>
+                <th>File Description</th>
+                <th>Key Findings</th>
             </tr>
         </thead>
         <tbody>
@@ -929,9 +939,9 @@ def process_directory(directory_path):
         
         html_output += f"""
             <tr>
-                <td>{row['File Name']}</td>
+                <td style="color: #ffffff; font-weight: 600;">{row['File Name']}</td>
                 <td class="file-type">{row['File Type']}</td>
-                <td>{row['File Description']}</td>
+                <td style="color: #e2e8f0;">{row['File Description']}</td>
                 <td class="key-findings">{findings_formatted}</td>
             </tr>
         """
@@ -948,6 +958,7 @@ def process_directory(directory_path):
     download_info = f"Redacted files saved in: {os.path.join(directory_path, 'redacted_output')}" if redacted_files_list else "No files required redaction"
     
     return html_output, image_gallery, download_info
+
 
 custom_css = """
 :root {
