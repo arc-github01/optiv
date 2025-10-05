@@ -1,0 +1,293 @@
+# Complete File Breakdown - What Happens Where
+
+## 📁 config/settings.py
+**Purpose:** Central configuration hub
+**What happens:**
+- Stores API keys (Gemini, Tesseract path)
+- Defines processing parameters (max text length, blur radius)
+- Sets file extensions and output directory names
+- Server configuration (host, port)
+**Key values:**
+- `GEMINI_API_KEY` - Your API key
+- `TESSERACT_CMD` - Path to Tesseract
+- `MAX_TEXT_LENGTH = 30000` - Text limit for analysis
+- `OUTPUT_DIR_NAME = "redacted_output"` - Where files are saved
+
+---
+
+## 📁 utils/patterns.py
+**Purpose:** Sensitive data detection patterns
+**What happens:**
+- Defines 50+ regex patterns for sensitive data
+- Email, phone, SSN, credit cards, AWS keys, etc.
+- Priority order for pattern matching
+- NER entity labels (PERSON, ORG, etc.)
+**Key data:**
+- `SENSITIVE_PATTERNS` dict - All regex patterns
+- `PRIORITY_PATTERNS` list - Order of application
+- `NER_LABELS` - spaCy entity types to redact
+
+---
+
+## 📁 utils/text_utils.py
+**Purpose:** Text analysis and redaction
+**What happens:**
+1. **Loads spaCy NER model** (`nlp = spacy.load()`)
+2. **`is_sensitive_text(text)`**:
+   - Checks text against all regex patterns
+   - Runs spaCy NER to find PERSON, ORG, GPE, LOC
+   - Returns True if sensitive content found
+3. **`redact_text(text)`**:
+   - Applies priority patterns first (keys, tokens)
+   - Applies remaining patterns
+   - Runs NER-based redaction
+   - Replaces sensitive text with `[REDACTED_TYPE]`
+   - Returns cleaned text
+
+---
+
+## 📁 utils/image_utils.py
+**Purpose:** Image processing and OCR
+**What happens:**
+1. **Initializes:**
+   - Configures Tesseract path
+   - Creates MTCNN face detector
+2. **`create_clean_image(img)`**:
+   - Converts to RGB
+   - Removes all metadata
+   - Returns clean PIL Image
+3. **`save_secure_image(img, path)`**:
+   - Cleans image
+   - Saves as PNG with no EXIF data
+4. **`blur_faces(img)`**:
+   - Detects faces using MTCNN
+   - Applies Gaussian blur to face regions
+5. **`redact_image_text(img)`**:
+   - Runs Tesseract OCR on image
+   - Detects AWS JSON patterns
+   - Groups text into blocks
+   - Pattern-based redaction (emails, IDs, keys)
+   - NER-based redaction (names, orgs)
+   - Blurs matched text regions
+6. **`extract_text_from_image(path)`**:
+   - Opens image
+   - Runs Tesseract OCR
+   - Returns (text, image)
+
+---
+
+## 📁 core/extractors.py
+**Purpose:** Extract text from documents
+**What happens:**
+1. **`extract_from_pdf(path)`**:
+   - Opens PDF with PyMuPDF
+   - Iterates through pages
+   - Extracts text from each page
+   - Returns concatenated text
+2. **`extract_from_docx(path)`**:
+   - Opens DOCX with python-docx
+   - Extracts paragraph text
+   - Extracts table text
+   - Returns joined text
+3. **`extract_from_excel(path)`**:
+   - Handles .xlsx and .xls
+   - Uses openpyxl or pandas
+   - Iterates through sheets
+   - Extracts cell values
+   - Returns formatted text
+4. **`extract_from_ppt(path)`**:
+   - Opens PPTX with python-pptx
+   - Iterates through slides
+   - Extracts text from shapes
+   - Extracts table data
+   - Returns slide-by-slide text
+
+---
+
+## 📁 core/redactors.py
+**Purpose:** Create redacted versions of files
+**What happens:**
+1. **`redact_pdf(input, output)`**:
+   - Opens PDF
+   - For each page:
+     - Gets text with bounding boxes
+     - Checks if text is sensitive
+     - Draws black rectangles over sensitive text
+     - Extracts embedded images
+     - Processes images (blur, clean)
+     - Re-inserts processed images
+   - Saves redacted PDF
+2. **`redact_docx(input, output)`**:
+   - Opens DOCX
+   - Iterates paragraphs
+   - Applies `redact_text()` to each
+   - Processes tables
+   - Saves redacted DOCX
+3. **`redact_excel(input, output)`**:
+   - Opens Excel
+   - For each sheet:
+     - Checks each cell
+     - If sensitive: blacks out cell
+     - Sets cell to "[REDACTED]"
+   - Saves redacted Excel
+4. **`redact_ppt(input, output)`**:
+   - Opens PPTX
+   - For each slide:
+     - Redacts text in shapes
+     - Redacts table text
+     - Extracts images
+     - Processes images (blur, clean)
+     - Replaces images
+   - Saves redacted PPTX
+
+---
+
+## 📁 core/analyzers.py
+**Purpose:** AI-powered content analysis
+**What happens:**
+1. **Configures Gemini API** with key
+2. **`analyze_with_gemini(text, type, name)`**:
+   - Creates Gemini model instance
+   - Builds prompt with text
+   - Asks for structured analysis
+   - Gets AI response
+   - Returns analysis text
+3. **`describe_image_with_gemini(path)`**:
+   - Loads image
+   - Cleans metadata
+   - Converts to PNG bytes
+   - Sends to Gemini vision API
+   - Gets image description
+   - Returns analysis
+4. **`parse_analysis_response(analysis)`**:
+   - Parses AI response
+   - Separates description from findings
+   - Returns (description, findings) tuple
+
+---
+
+## 📁 processors/file_processor.py
+**Purpose:** Main single file processing pipeline
+**What happens - THIS IS WHERE OCR TEXT PRINT IS:**
+```python
+# Line ~85-90 in process_single_file()
+elif ext in ["jpg", "jpeg", "png"]:
+    ocr_text, img = extract_text_from_image(fname)
+    img = detect_and_blur_codes(img)
+    img = redact_image_text(img)
+    img = blur_faces(img)
+    
+    # Create clean version and save securely
+    img = create_clean_image(img)
+    result["Processed Image"] = img
+    
+    save_secure_image(img, output_path)
+    result["Redacted File"] = output_path
+    
+    # Analyze using the secure clean image path
+    if len(ocr_text.strip()) < 10:
+        analysis = describe_image_with_gemini(output_path)
+    else:
+        redacted_text = redact_text(ocr_text)
+        print(redacted_text[:5000])  # <--- OCR TEXT PRINTED HERE
+        analysis = analyze_with_gemini(redacted_text[:IMAGE_TEXT_LENGTH], "Image", file_name)
+```
+
+**Full processing flow:**
+1. Gets file path and determines type
+2. Creates output directory
+3. **For PDF:**
+   - Extract text → Redact → Analyze → Create redacted PDF
+4. **For DOCX:**
+   - Extract text → Redact → Analyze → Create redacted DOCX
+5. **For Excel:**
+   - Extract text → Redact → Analyze → Create redacted Excel
+6. **For PPTX:**
+   - Extract text → Redact → Analyze → Create redacted PPTX
+7. **For Images:**
+   - OCR text extraction
+   - Blur codes
+   - Redact text in image
+   - Blur faces
+   - Clean metadata
+   - Save securely
+   - **Print OCR text (line ~87)** 👈 HERE
+   - Analyze with AI
+8. Parses AI response
+9. Returns result dict
+
+---
+
+## 📁 processors/directory_processor.py
+**Purpose:** Batch process multiple files
+**What happens:**
+1. **`process_directory(path)`**:
+   - Validates directory exists
+   - Scans for supported files
+   - Iterates through files
+   - Calls `process_single_file()` for each
+   - Collects results
+   - Creates DataFrame
+   - Generates HTML report
+   - Returns (html, images, info)
+2. **`generate_html_report(df)`**:
+   - Takes DataFrame of results
+   - Builds styled HTML table
+   - Formats findings as bullet points
+   - Returns HTML string
+
+**Console output:**
+```python
+for file_path in files:
+    print(f"Processing: {file_path}")  # Prints each file being processed
+    result = process_single_file(file_path)
+    # ...
+```
+
+---
+
+## 📁 ui/styles.py
+**Purpose:** CSS styling
+**What happens:**
+- Defines `CUSTOM_CSS` constant
+- Contains all styling rules:
+  - Dark theme colors
+  - Gradient backgrounds
+  - Card animations
+  - Button hover effects
+  - Table styling
+  - Responsive design
+
+---
+
+## 📁 ui/interface.py
+**Purpose:** Gradio interface setup
+**What happens:**
+1. **`create_interface()`**:
+   - Creates Gradio Blocks
+   - Builds UI layout:
+     - Header section
+     - Feature cards (4 cards)
+     - Supported formats display
+     - Input section (directory path)
+     - Analyze button
+     - Results section (HTML output)
+     - Footer
+   - Connects button click to `process_directory()`
+   - Returns interface object
+
+---
+
+## 📁 main.py
+**Purpose:** Application entry point
+**What happens:**
+1. Prints startup banner
+2. Calls `create_interface()`
+3. Launches Gradio server:
+   - Host: 0.0.0.0
+   - Port: 7860
+   - Shows errors
+   - No sharing
+
+---
+
