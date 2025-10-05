@@ -8,9 +8,7 @@
 - [Supported File Formats](#supported-file-formats)
 - [Installation](#installation)
 - [Usage](#usage)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact](#contact)
+
 
 ## About the Project
 The Enhanced Batch File Analyzer & Redactor is a powerful tool to automatically detect and redact sensitive information across various document and image formats. It incorporates advanced pattern matching, AI-powered content analysis, and image processing to protect personally identifiable information (PII), credentials, addresses, and more. The tool features a user-friendly Gradio web interface for batch processing directories of files, making it ideal for privacy-focused data handling and compliance workflows.

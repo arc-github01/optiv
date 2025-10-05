@@ -5,3 +5,4 @@ ENV/
 .venv/
 input_files/redacted_output
 test
+working.txt

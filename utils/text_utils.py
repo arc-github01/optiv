@@ -11,7 +11,6 @@ nlp = spacy.load(SPACY_MODEL)
 
 
 def is_sensitive_text(text):
-    """Check if text contains sensitive information"""
     if not text or len(str(text)) < 2:
         return False
     
