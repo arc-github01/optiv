@@ -2,6 +2,12 @@
 Configuration settings for the document redaction system
 """
 import os
+from dotenv import load_dotenv
+from pathlib import Path
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent
+env_path = project_root / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # API Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
