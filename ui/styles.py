@@ -114,21 +114,22 @@ CUSTOM_CSS = """
     font-weight: 600;
 }
 
-.directory-input {
+.file-input {
     background: #2d3748;
     border: 2px dashed #4a5568;
     border-radius: 10px;
     padding: 20px;
     transition: all 0.3s ease;
     color: white;
+    min-height: 100px;
 }
 
-.directory-input:hover {
+.file-input:hover {
     border-color: var(--primary);
     background: #374151;
 }
 
-.directory-input label {
+.file-input label {
     color: white !important;
 }
 
@@ -142,11 +143,30 @@ CUSTOM_CSS = """
     font-weight: 600 !important;
     transition: all 0.3s ease !important;
     box-shadow: 0 5px 15px rgba(67, 97, 238, 0.4) !important;
+    width: 100% !important;
 }
 
 .analyze-btn:hover {
     transform: translateY(-2px);
     box-shadow: 0 8px 25px rgba(67, 97, 238, 0.6) !important;
+}
+
+.clear-btn {
+    background: linear-gradient(135deg, #6c757d, #495057) !important;
+    color: white !important;
+    border: none !important;
+    padding: 12px 30px !important;
+    border-radius: 50px !important;
+    font-size: 1em !important;
+    font-weight: 600 !important;
+    transition: all 0.3s ease !important;
+    box-shadow: 0 5px 15px rgba(108, 117, 125, 0.3) !important;
+    width: 100% !important;
+}
+
+.clear-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(108, 117, 125, 0.5) !important;
 }
 
 .results-section {
@@ -164,6 +184,20 @@ CUSTOM_CSS = """
     font-weight: 600;
     border-bottom: 3px solid var(--success);
     padding-bottom: 10px;
+}
+
+.download-section {
+    background: linear-gradient(135deg, var(--success), #4895ef);
+    padding: 20px;
+    border-radius: 10px;
+    margin-top: 20px;
+    border: 2px solid rgba(76, 201, 240, 0.3);
+}
+
+.download-section label {
+    color: white !important;
+    font-weight: 600 !important;
+    font-size: 1.1em !important;
 }
 
 .file-type-badge {
@@ -216,6 +250,13 @@ CUSTOM_CSS = """
     font-weight: 600;
     color: var(--primary);
     border: 2px solid var(--primary);
+    transition: all 0.3s ease;
+}
+
+.format-badge:hover {
+    background: var(--primary);
+    color: white;
+    transform: scale(1.05);
 }
 
 label {
@@ -232,5 +273,37 @@ label {
 
 .gr-markdown h1, .gr-markdown h2, .gr-markdown h3 {
     color: white !important;
+}
+
+.gr-file {
+    background: #2d3748 !important;
+    border: 2px dashed #4a5568 !important;
+    border-radius: 10px !important;
+}
+
+.gr-file:hover {
+    border-color: var(--primary) !important;
+}
+
+.gr-image {
+    border-radius: 10px;
+    border: 2px solid var(--dark-border);
+    background: #2d3748;
+}
+
+.gr-html {
+    background: transparent;
+}
+
+/* File upload area styling */
+.wrap.svelte-1cl284s {
+    background: #2d3748 !important;
+    border: 2px dashed #4a5568 !important;
+    border-radius: 10px !important;
+}
+
+.wrap.svelte-1cl284s:hover {
+    border-color: var(--primary) !important;
+    background: #374151 !important;
 }
 """

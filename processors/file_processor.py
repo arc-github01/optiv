@@ -1,7 +1,11 @@
 """
 Main file processing logic for different document types
+FIXED: Now uses secure pre-redaction for images
+SECURE: Filename anonymization for LLM analysis
 """
+import re
 import os
+import hashlib
 from core.extractors import (
     extract_from_pdf, extract_from_docx, extract_from_excel,
     extract_from_ppt
@@ -15,12 +19,46 @@ from core.analyzers import (
 )
 from utils.text_utils import redact_text
 from utils.image_utils import (
-    extract_text_from_image, redact_image_text, blur_faces,
-    detect_and_blur_codes, create_clean_image, save_secure_image
+    process_image_secure, save_secure_image
 )
 from config.settings import (
     OUTPUT_DIR_NAME, MAX_TEXT_LENGTH, IMAGE_TEXT_LENGTH
 )
+
+
+def anonymize_filename(file_name, ext):
+    """
+    Create an anonymous filename for LLM analysis.
+    LLM will never see the real filename.
+    
+    Args:
+        file_name: Original filename
+        ext: File extension
+    
+    Returns:
+        str: Anonymous filename like "document_abc123.pdf"
+    """
+    # Create a short hash of the filename for tracking (optional)
+    file_hash = hashlib.md5(file_name.encode()).hexdigest()[:6]
+    
+    # Map extensions to generic names
+    ext_map = {
+        'pdf': 'document',
+        'docx': 'document',
+        'doc': 'document',
+        'xlsx': 'spreadsheet',
+        'xls': 'spreadsheet',
+        'pptx': 'presentation',
+        'ppt': 'presentation',
+        'jpg': 'image',
+        'jpeg': 'image',
+        'png': 'image'
+    }
+    
+    generic_name = ext_map.get(ext.lower(), 'file')
+    anonymous_name = f"{generic_name}_{file_hash}.{ext}"
+    
+    return anonymous_name
 
 
 def process_single_file(file_path):
@@ -29,8 +67,16 @@ def process_single_file(file_path):
     file_name = os.path.basename(fname)
     ext = fname.split(".")[-1].lower()
     
+    # Create anonymous filename for LLM (LLM never sees real name)
+    anonymous_name = anonymize_filename(file_name, ext)
+    
+    print(f"\n🔒 FILENAME ANONYMIZATION:")
+    print(f"  Real filename: {file_name}")
+    print(f"  LLM sees: {anonymous_name}")
+    print(f"  ✅ Real filename protected from LLM\n")
+    
     result = {
-        "File Name": file_name,
+        "File Name": file_name,  # Keep real name for user display
         "File Type": f".{ext}",
         "File Description": "",
         "Key Findings": "",
@@ -51,7 +97,8 @@ def process_single_file(file_path):
                 return result
                 
             redacted_text = redact_text(raw_text)
-            analysis = analyze_with_gemini(redacted_text[:MAX_TEXT_LENGTH], "PDF", file_name)
+            # Use anonymous filename for LLM
+            analysis = analyze_with_gemini(redacted_text[:MAX_TEXT_LENGTH], "PDF", anonymous_name)
             
             redacted_file = redact_pdf(fname, output_path)
             result["Redacted File"] = redacted_file
@@ -59,7 +106,8 @@ def process_single_file(file_path):
         elif ext == "docx":
             raw_text = extract_from_docx(fname)
             redacted_text = redact_text(raw_text)
-            analysis = analyze_with_gemini(redacted_text[:MAX_TEXT_LENGTH], "DOCX", file_name)
+            # Use anonymous filename for LLM
+            analysis = analyze_with_gemini(redacted_text[:MAX_TEXT_LENGTH], "DOCX", anonymous_name)
             
             redacted_file = redact_docx(fname, output_path)
             result["Redacted File"] = redacted_file
@@ -68,7 +116,8 @@ def process_single_file(file_path):
             raw_text = extract_from_excel(fname)
             redacted_text = redact_text(raw_text)
             
-            analysis = analyze_with_gemini(redacted_text[:MAX_TEXT_LENGTH], "Excel", file_name)
+            # Use anonymous filename for LLM
+            analysis = analyze_with_gemini(redacted_text[:MAX_TEXT_LENGTH], "Excel", anonymous_name)
             
             redacted_file = redact_excel(fname, output_path)
             result["Redacted File"] = redacted_file
@@ -76,31 +125,51 @@ def process_single_file(file_path):
         elif ext in ["pptx", "ppt"]:
             raw_text = extract_from_ppt(fname)
             redacted_text = redact_text(raw_text)
-            analysis = analyze_with_gemini(redacted_text[:MAX_TEXT_LENGTH], "PowerPoint", file_name)
+            # Use anonymous filename for LLM
+            analysis = analyze_with_gemini(redacted_text[:MAX_TEXT_LENGTH], "PowerPoint", anonymous_name)
             
             redacted_file = redact_ppt(fname, output_path)
             result["Redacted File"] = redacted_file
             
         elif ext in ["jpg", "jpeg", "png"]:
-            ocr_text, img = extract_text_from_image(fname)
-            img = detect_and_blur_codes(img)
-            img = redact_image_text(img)
-            img = blur_faces(img)
+            # ✅ FIXED: Use secure image processing
+            print("\n" + "="*60)
+            print("🔒 SECURE IMAGE PROCESSING")
+            print("="*60)
             
-            # Create clean version and save securely
-            img = create_clean_image(img)
+            # Process image securely - redacts FIRST, then extracts
+            secure_result = process_image_secure(fname, return_original=False)
+            
+            redacted_text = secure_result['redacted_text']
+            img = secure_result['redacted_image']
+            is_valid, issues = secure_result['validation']
+            
+            # Log validation results
+            if not is_valid:
+                print(f"⚠️  Validation found {len(issues)} issues:")
+                for issue in issues:
+                    print(f"  - {issue}")
+            else:
+                print("✅ All sensitive data successfully redacted!")
+            
+            print("="*60 + "\n")
+            
+            # Save the redacted image
             result["Processed Image"] = img
-            
             save_secure_image(img, output_path)
             result["Redacted File"] = output_path
             
-            # Analyze using the secure clean image path
-            if len(ocr_text.strip()) < 10:
+            # Analyze using the redacted text only
+            if len(redacted_text.strip()) < 10:
+                # If no text extracted, use image description with anonymous name
                 analysis = describe_image_with_gemini(output_path)
             else:
-                redacted_text = redact_text(ocr_text)
-                # print(redacted_text[:IMAGE_TEXT_LENGTH])
-                analysis = analyze_with_gemini(redacted_text[:IMAGE_TEXT_LENGTH], "Image", file_name)
+                # Analyze the already-redacted text with anonymous filename
+                analysis = analyze_with_gemini(
+                    redacted_text[:IMAGE_TEXT_LENGTH], 
+                    "Image", 
+                    anonymous_name  # ✅ LLM sees anonymous name
+                )
         else:
             result["File Description"] = "Unsupported file type"
             return result
