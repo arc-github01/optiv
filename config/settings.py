@@ -4,7 +4,7 @@ Configuration settings for the document redaction system
 import os
 
 # API Configuration
-GEMINI_API_KEY = "AIzaSyDt7DD7ySYBoqiWor9kend7wsbq1xKTviA" 
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # Tesseract Configuration
 TESSERACT_CMD = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
